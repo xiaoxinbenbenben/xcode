@@ -2,13 +2,10 @@
 .pytest_cache/
 __pycache__/
 *.pyc
-.docs/
-.src/tests/
-.tests/
+/docs/
+/tests/
 .env
 openai_compatible_check.py
-docs/legacy/
-docs/reference/
-docs/plans/
+artifacts/tool-output/
 artifacts/prompt_history.txt
 artifacts/todos/

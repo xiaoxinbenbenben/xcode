@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import os
+import re
 from dataclasses import dataclass
+from datetime import datetime
 from fnmatch import fnmatch
 from pathlib import Path
 from time import perf_counter
 from typing import Any
+from uuid import uuid4
 
 from src.protocol import ToolResponse, error_response
 
@@ -13,6 +17,9 @@ from src.protocol import ToolResponse, error_response
 
 # 当前阶段所有工具都固定以项目根目录为边界，不支持独立 working_dir。
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_TOOL_OUTPUT_MAX_LINES = 200
+DEFAULT_TOOL_OUTPUT_MAX_BYTES = 12_288
+DEFAULT_TOOL_OUTPUT_DIR = "artifacts/tool-output"
 DEFAULT_IGNORED_NAMES = {
     ".git",
     ".hg",
@@ -46,6 +53,37 @@ class FileSnapshot:
     # 用 mtime_ms + size_bytes 表达“我上次读到的文件版本”。
     mtime_ms: int
     size_bytes: int
+
+
+@dataclass(slots=True)
+class ToolOutputLimits:
+    # 最小版本先只支持行数和字节两个阈值。
+    max_lines: int
+    max_bytes: int
+
+
+@dataclass(slots=True)
+class OutputTruncation:
+    # 这份结构专门描述“上下文里保留了什么、完整输出被写到了哪里”。
+    max_lines: int
+    max_bytes: int
+    original_lines: int
+    original_bytes: int
+    kept_lines: int
+    kept_bytes: int
+    preview_text: str
+    full_output_path: str
+
+    def as_dict(self) -> dict[str, int | str]:
+        return {
+            "max_lines": self.max_lines,
+            "max_bytes": self.max_bytes,
+            "original_lines": self.original_lines,
+            "original_bytes": self.original_bytes,
+            "kept_lines": self.kept_lines,
+            "kept_bytes": self.kept_bytes,
+            "full_output_path": self.full_output_path,
+        }
 
 
 @dataclass(slots=True)
@@ -191,6 +229,99 @@ def normalize_posix(path: Path) -> str:
     # 返回给 agent 的路径统一用相对项目根目录的 POSIX 字符串，避免平台差异污染协议。
     relative = path.relative_to(PROJECT_ROOT)
     return "." if str(relative) == "." else relative.as_posix()
+
+
+def _read_positive_int_env(name: str, default: int) -> int:
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return default
+    try:
+        parsed = int(raw_value)
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default
+
+
+def get_tool_output_limits() -> ToolOutputLimits:
+    # 阈值按调用时动态读取，测试和后续配置覆盖都不需要重启进程。
+    return ToolOutputLimits(
+        max_lines=_read_positive_int_env("TOOL_OUTPUT_MAX_LINES", DEFAULT_TOOL_OUTPUT_MAX_LINES),
+        max_bytes=_read_positive_int_env("TOOL_OUTPUT_MAX_BYTES", DEFAULT_TOOL_OUTPUT_MAX_BYTES),
+    )
+
+
+def count_text_lines(text: str) -> int:
+    if not text:
+        return 0
+    return len(text.splitlines())
+
+
+def build_output_preview(text: str, *, max_lines: int, max_bytes: int) -> str:
+    # 预览始终走同一套 head 规则，避免每个工具各自决定保留多少内容。
+    if not text:
+        return ""
+
+    limited_lines = "".join(text.splitlines(keepends=True)[:max_lines])
+    encoded = limited_lines.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return limited_lines
+
+    # 这里按字节再截一次，确保最终进上下文的预览不会无限增长。
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
+
+
+def get_tool_output_dir() -> WorkspacePath:
+    configured_dir = os.environ.get("TOOL_OUTPUT_DIR", DEFAULT_TOOL_OUTPUT_DIR)
+    return resolve_workspace_path(configured_dir)
+
+
+def maybe_truncate_output_text(*, tool_name: str, full_output: str) -> OutputTruncation | None:
+    # 这层统一负责“大输出治理”：
+    # 判阈值、生成预览、落盘完整输出，并把回查路径返回给工具层。
+    if not full_output:
+        return None
+
+    limits = get_tool_output_limits()
+    original_lines = count_text_lines(full_output)
+    original_bytes = len(full_output.encode("utf-8"))
+    if original_lines <= limits.max_lines and original_bytes <= limits.max_bytes:
+        return None
+
+    preview_text = build_output_preview(
+        full_output,
+        max_lines=limits.max_lines,
+        max_bytes=limits.max_bytes,
+    )
+    output_dir = get_tool_output_dir()
+    output_dir.resolved.mkdir(parents=True, exist_ok=True)
+
+    # 文件名只保留最小可读信息，真正的语义还是由相对路径和工具名共同表达。
+    safe_tool_name = re.sub(r"[^A-Za-z0-9_-]+", "-", tool_name).strip("-") or "tool"
+    filename = (
+        f"tool_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_{safe_tool_name}_{uuid4().hex[:8]}.txt"
+    )
+    output_path = output_dir.resolved / filename
+    output_path.write_text(full_output, encoding="utf-8")
+
+    return OutputTruncation(
+        max_lines=limits.max_lines,
+        max_bytes=limits.max_bytes,
+        original_lines=original_lines,
+        original_bytes=original_bytes,
+        kept_lines=count_text_lines(preview_text),
+        kept_bytes=len(preview_text.encode("utf-8")),
+        preview_text=preview_text,
+        full_output_path=normalize_posix(output_path),
+    )
+
+
+def build_output_truncation_notice(truncation: OutputTruncation) -> str:
+    # 提示里直接暴露 Read / Grep 可消费的相对路径，方便模型后续回查完整内容。
+    return (
+        "\n\n完整输出已写入 "
+        f"'{truncation.full_output_path}'，当前只返回预览。"
+        " 可用 Read 或 Grep 继续回查完整结果。"
+    )
 
 
 def get_file_snapshot(path: Path) -> FileSnapshot:

@@ -4,6 +4,7 @@ import os
 import re
 import shlex
 import subprocess
+from typing import Any
 
 from agents import RunContextWrapper, function_tool
 
@@ -11,10 +12,13 @@ from src.protocol import ToolResponse, partial_response, success_response
 from src.runtime.session import ToolRuntimeContext
 from src.tools.common import (
     ToolFailure,
+    build_output_preview,
+    build_output_truncation_notice,
     build_context,
     build_stats,
     ensure_exists,
     error_from_failure,
+    maybe_truncate_output_text,
     resolve_workspace_path,
     start_timer,
 )
@@ -202,6 +206,38 @@ def _build_text(
     return "\n".join(lines)
 
 
+def _apply_bash_output_truncation(
+    *,
+    data: dict[str, Any],
+    text: str,
+) -> tuple[dict[str, Any], str, bool]:
+    # Bash 最容易产生超长 stdout/stderr，所以在最终封装前统一过一层共享截断机制。
+    output_truncation = maybe_truncate_output_text(
+        tool_name="Bash",
+        full_output=text,
+    )
+    if output_truncation is None:
+        return data, text, False
+
+    truncated_data = dict(data)
+    truncated_data["stdout"] = build_output_preview(
+        str(data.get("stdout", "")),
+        max_lines=output_truncation.max_lines,
+        max_bytes=output_truncation.max_bytes,
+    )
+    truncated_data["stderr"] = build_output_preview(
+        str(data.get("stderr", "")),
+        max_lines=output_truncation.max_lines,
+        max_bytes=output_truncation.max_bytes,
+    )
+    truncated_data["output_truncated"] = True
+    truncated_data["truncation"] = output_truncation.as_dict()
+
+    # text 只保留统一预览和回查提示，避免 Bash 把整段完整输出重新塞回上下文。
+    truncated_text = output_truncation.preview_text + build_output_truncation_notice(output_truncation)
+    return truncated_data, truncated_text, True
+
+
 def run_bash(
     command: str,
     directory: str = ".",
@@ -271,24 +307,30 @@ def run_bash(
             stdout_bytes=len(stdout.encode("utf-8")),
             stderr_bytes=len(stderr.encode("utf-8")),
         )
+        data = {
+            "stdout": stdout,
+            "stderr": stderr,
+            "exit_code": None,
+            "command": normalized_command,
+            "directory": workspace_directory.relative_posix,
+            "timed_out": True,
+            "truncated": False,
+        }
+        text = _build_text(
+            command=normalized_command,
+            exit_code=None,
+            time_ms=int(stats["time_ms"]),
+            stdout=stdout,
+            stderr=stderr,
+            timed_out=True,
+        )
+        data, text, _output_truncated = _apply_bash_output_truncation(
+            data=data,
+            text=text,
+        )
         return partial_response(
-            data={
-                "stdout": stdout,
-                "stderr": stderr,
-                "exit_code": None,
-                "command": normalized_command,
-                "directory": workspace_directory.relative_posix,
-                "timed_out": True,
-                "truncated": False,
-            },
-            text=_build_text(
-                command=normalized_command,
-                exit_code=None,
-                time_ms=int(stats["time_ms"]),
-                stdout=stdout,
-                stderr=stderr,
-                timed_out=True,
-            ),
+            data=data,
+            text=text,
             stats=stats,
             context=build_context(
                 params_input=params_input,
@@ -316,25 +358,35 @@ def run_bash(
         stdout_bytes=len(stdout.encode("utf-8")),
         stderr_bytes=len(stderr.encode("utf-8")),
     )
-    response_builder = success_response if completed.returncode == 0 else partial_response
+    data = {
+        "stdout": stdout,
+        "stderr": stderr,
+        "exit_code": completed.returncode,
+        "command": normalized_command,
+        "directory": workspace_directory.relative_posix,
+        "timed_out": False,
+        "truncated": False,
+    }
+    text = _build_text(
+        command=normalized_command,
+        exit_code=completed.returncode,
+        time_ms=int(stats["time_ms"]),
+        stdout=stdout,
+        stderr=stderr,
+        timed_out=False,
+    )
+    data, text, output_truncated = _apply_bash_output_truncation(
+        data=data,
+        text=text,
+    )
+    response_builder = (
+        success_response
+        if completed.returncode == 0 and not output_truncated
+        else partial_response
+    )
     return response_builder(
-        data={
-            "stdout": stdout,
-            "stderr": stderr,
-            "exit_code": completed.returncode,
-            "command": normalized_command,
-            "directory": workspace_directory.relative_posix,
-            "timed_out": False,
-            "truncated": False,
-        },
-        text=_build_text(
-            command=normalized_command,
-            exit_code=completed.returncode,
-            time_ms=int(stats["time_ms"]),
-            stdout=stdout,
-            stderr=stderr,
-            timed_out=False,
-        ),
+        data=data,
+        text=text,
         stats=stats,
         context=build_context(
             params_input=params_input,

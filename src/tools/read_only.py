@@ -14,11 +14,14 @@ from src.protocol import ToolResponse, partial_response, success_response
 from src.tools.common import (
     PROJECT_ROOT,
     ToolFailure,
+    build_output_truncation_notice,
     build_context,
     build_stats,
     ensure_exists,
     error_from_failure,
     get_file_snapshot,
+    get_tool_output_limits,
+    maybe_truncate_output_text,
     normalize_posix,
     read_workspace_text_file,
     resolve_workspace_path,
@@ -450,7 +453,21 @@ def grep_search(
             matches = matches[:limit]
 
         # 对 Grep 来说，fallback 和截断都属于“结果可用但有折扣”。
-        status_is_partial = truncated or fallback_used
+        all_matches = matches
+        rendered_matches = "\n".join(
+            f"{item['file']}:{item['line']}: {item['text']}"
+            for item in all_matches
+        )
+        output_truncation = maybe_truncate_output_text(
+            tool_name="Grep",
+            full_output=rendered_matches,
+        )
+        if output_truncation is not None:
+            preview_limit = max(1, get_tool_output_limits().max_lines)
+            matches = all_matches[:preview_limit]
+
+        # 对 Grep 来说，fallback、结果截断和统一输出截断都属于“结果可用但有折扣”。
+        status_is_partial = truncated or fallback_used or output_truncation is not None
         response_builder = partial_response if status_is_partial else success_response
 
         data: dict[str, Any] = {
@@ -460,28 +477,43 @@ def grep_search(
         if fallback_used:
             data["fallback_used"] = True
             data["fallback_reason"] = fallback_reason
+        if output_truncation is not None:
+            data["output_truncated"] = True
+            data["truncation"] = output_truncation.as_dict()
 
         if matches:
-            preview = "\n".join(
-                f"{item['file']}:{item['line']}: {item['text']}"
-                for item in matches[:20]
+            preview = (
+                output_truncation.preview_text
+                if output_truncation is not None
+                else "\n".join(
+                    f"{item['file']}:{item['line']}: {item['text']}"
+                    for item in matches[:20]
+                )
             )
-            text = f"在 '{workspace_path.relative_posix}' 中找到了 {len(matches)} 条匹配 '{pattern}' 的结果。"
+            text = f"在 '{workspace_path.relative_posix}' 中找到了 {len(all_matches)} 条匹配 '{pattern}' 的结果。"
             if fallback_used:
                 text += " 当前使用了 Python 回退搜索。"
             if truncated:
                 text += " 结果已截断，请收窄 pattern、path 或 include。"
+            if output_truncation is not None:
+                text += " 当前只返回了预览结果。"
             text += f"\n\n{preview}"
+            if output_truncation is not None:
+                text += build_output_truncation_notice(output_truncation)
         else:
             text = f"在 '{workspace_path.relative_posix}' 中没有找到匹配 '{pattern}' 的内容。"
             if fallback_used:
                 text += " 当前使用了 Python 回退搜索。"
 
-        matched_files = len({item["file"] for item in matches})
+        matched_files = len({item["file"] for item in all_matches})
         return response_builder(
             data=data,
             text=text,
-            stats=build_stats(start_time, matched_lines=len(matches), matched_files=matched_files),
+            stats=build_stats(
+                start_time,
+                matched_lines=len(all_matches),
+                matched_files=matched_files,
+            ),
             context=build_context(
                 params_input=params_input,
                 path_resolved=workspace_path.relative_posix,
@@ -582,8 +614,20 @@ def read_file(
         }
         if fallback_encoding is not None:
             data["fallback_encoding"] = fallback_encoding
+        output_truncation = maybe_truncate_output_text(
+            tool_name="Read",
+            full_output=content,
+        )
+        if output_truncation is not None:
+            data["content"] = output_truncation.preview_text
+            data["output_truncated"] = True
+            data["truncation"] = output_truncation.as_dict()
 
-        response_builder = partial_response if truncated or fallback_encoding else success_response
+        response_builder = (
+            partial_response
+            if truncated or fallback_encoding or output_truncation is not None
+            else success_response
+        )
         if total_lines == 0:
             text = f"读取了 '{workspace_path.relative_posix}'，文件为空。"
         else:
@@ -592,6 +636,8 @@ def read_file(
                 text += f" 结果已截断，可用 start_line={end_line + 1} 继续读取。"
         if fallback_encoding:
             text += " 文件解码时使用了 replace 回退。"
+        if output_truncation is not None:
+            text += build_output_truncation_notice(output_truncation)
 
         # 读取成功后，把该路径的最新文件快照记到 runtime context，
         # 供同一会话里的 Edit / Write 自动补锁字段。
