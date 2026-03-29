@@ -7,6 +7,8 @@ from uuid import uuid4
 
 from agents import SQLiteSession
 
+from src.context.compaction import HistorySummary
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 # 当前阶段的本地快照表只服务于安全编辑链路，
 # 现在再加上 Todo 状态，但仍不承担摘要、裁剪或跨进程恢复等更重的治理职责。
@@ -41,6 +43,8 @@ class ToolRuntimeContext:
     # 这张表按“规范化路径 -> 最近一次成功 Read 的快照”保存。
     # 同一路径再次读取时只覆盖自己，不会把别的文件快照挤掉。
     session_id: str = "detached-session"
+    session: SQLiteSession | None = None
+    current_model: str | None = None
     read_snapshots: OrderedDict[str, ReadSnapshot] = field(default_factory=OrderedDict)
     max_read_snapshots: int = DEFAULT_MAX_READ_SNAPSHOTS
     todo_state: TodoState | None = None
@@ -48,6 +52,8 @@ class ToolRuntimeContext:
     todo_archive_path: Path | None = None
     todo_completed_block_count: int = 0
     last_persisted_todo_fingerprint: str | None = None
+    history_summary: HistorySummary | None = None
+    history_compaction_archive_path: str | None = None
 
     def remember_read_snapshot(
         self,
@@ -101,6 +107,16 @@ class ToolRuntimeContext:
         self.last_persisted_todo_fingerprint = fingerprint
         self.todo_completed_block_count += 1
 
+    def remember_history_summary(
+        self,
+        summary: HistorySummary,
+        *,
+        archive_path: str | None,
+    ) -> None:
+        # 这份结构化 summary 供后续 L3 上下文直接复用，不再重复从文本里反解析。
+        self.history_summary = summary
+        self.history_compaction_archive_path = archive_path
+
 
 @dataclass(slots=True)
 class CliSessionRuntime:
@@ -117,8 +133,10 @@ def build_cli_session_runtime() -> CliSessionRuntime:
     # 这一步先只保证“一次 CLI 启动里的多轮记忆”。
     # 因此 session id 每次启动都新建，不做恢复旧会话。
     session_id = f"cli-{uuid4().hex}"
+    session = SQLiteSession(session_id=session_id, db_path=":memory:")
+    context = ToolRuntimeContext(session_id=session_id, session=session)
     return CliSessionRuntime(
         session_id=session_id,
-        session=SQLiteSession(session_id=session_id, db_path=":memory:"),
-        context=ToolRuntimeContext(session_id=session_id),
+        session=session,
+        context=context,
     )

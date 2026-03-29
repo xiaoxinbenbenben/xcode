@@ -7,5 +7,6 @@ __pycache__/
 .env
 openai_compatible_check.py
 artifacts/tool-output/
+artifacts/compaction/
 artifacts/prompt_history.txt
 artifacts/todos/

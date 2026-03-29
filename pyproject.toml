@@ -9,6 +9,7 @@ dependencies = [
     "openai-agents>=0.13.0",
     "prompt-toolkit>=3.0.52",
     "python-dotenv>=1.2.2",
+    "tiktoken>=0.9.0",
 ]
 
 [dependency-groups]

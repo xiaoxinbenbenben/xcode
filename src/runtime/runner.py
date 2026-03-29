@@ -4,6 +4,7 @@ from collections.abc import Callable
 
 from agents import (
     Runner,
+    RunConfig,
     set_default_openai_api,
     set_default_openai_client,
     set_tracing_disabled,
@@ -30,6 +31,18 @@ def configure_openai_runtime(config: RuntimeConfig) -> None:
     set_tracing_disabled(True)
 
 
+def build_session_input_callback(context_bundle):
+    # SDK 会把“已有历史”和“本轮新输入”分别传给 callback。
+    # 这里显式接收两个参数，只替换历史视图，保留当前轮真实新输入。
+    def session_input_callback(_history_items, new_items):
+        return [
+            *context_bundle.runtime.history_items,
+            *new_items,
+        ]
+
+    return session_input_callback
+
+
 async def run_streamed(
     user_input: str,
     config: RuntimeConfig,
@@ -38,20 +51,31 @@ async def run_streamed(
 ) -> str:
     """执行一次流式 agent 运行，并把文本增量回传给调用方。"""
     configure_openai_runtime(config)
+    if session_runtime is not None:
+        # tool context 需要知道当前模型名，手动 Compact 时会复用同一模型生成 summary。
+        session_runtime.context.current_model = config.model
     context_bundle = await build_context_bundle(
         user_input=user_input,
         session_runtime=session_runtime,
         tool_names=[tool.name for tool in AGENT_TOOLS],
+        model_name=config.model,
     )
     agent = build_root_agent(
         model=config.model,
         instructions=context_bundle.build_agent_instructions(),
     )
+    run_config = None
+    if session_runtime is not None:
+        # micro_compact 只影响“本轮送给模型的输入视图”，不直接改写底层 session 原文。
+        run_config = RunConfig(
+            session_input_callback=build_session_input_callback(context_bundle)
+        )
     result = Runner.run_streamed(
         agent,
         input=context_bundle.build_runner_input(),
         session=session_runtime.session if session_runtime is not None else None,
         context=session_runtime.context if session_runtime is not None else None,
+        run_config=run_config,
     )
 
     saw_delta = False
