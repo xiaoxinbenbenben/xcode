@@ -274,16 +274,6 @@ def list_files(
             start_time=start_time,
             params_input=params_input,
         )
-    except Exception as exc:
-        return error_from_failure(
-            ToolFailure(
-                code="INTERNAL_ERROR",
-                message=str(exc),
-                text="列目录时发生内部错误。",
-            ),
-            start_time=start_time,
-            params_input=params_input,
-        )
 
 
 def glob_search(
@@ -366,16 +356,6 @@ def glob_search(
             start_time=start_time,
             params_input=params_input,
         )
-    except Exception as exc:
-        return error_from_failure(
-            ToolFailure(
-                code="INTERNAL_ERROR",
-                message=str(exc),
-                text="按名称搜索文件时发生内部错误。",
-            ),
-            start_time=start_time,
-            params_input=params_input,
-        )
 
 
 def grep_search(
@@ -428,7 +408,7 @@ def grep_search(
                     include=include,
                     case_sensitive=case_sensitive,
                 )
-            except Exception:
+            except (OSError, RuntimeError, subprocess.SubprocessError):
                 # rg 失败时不直接报错，而是降级到 Python 搜索，并用 partial 暴露“结果打折”。
                 fallback_used = True
                 fallback_reason = "rg_failed"
@@ -533,16 +513,6 @@ def grep_search(
     except ToolFailure as failure:
         return error_from_failure(
             failure,
-            start_time=start_time,
-            params_input=params_input,
-        )
-    except Exception as exc:
-        return error_from_failure(
-            ToolFailure(
-                code="INTERNAL_ERROR",
-                message=str(exc),
-                text="按内容搜索代码时发生内部错误。",
-            ),
             start_time=start_time,
             params_input=params_input,
         )
@@ -668,16 +638,6 @@ def read_file(
     except ToolFailure as failure:
         return error_from_failure(
             failure,
-            start_time=start_time,
-            params_input=params_input,
-        )
-    except Exception as exc:
-        return error_from_failure(
-            ToolFailure(
-                code="INTERNAL_ERROR",
-                message=str(exc),
-                text="读取文件时发生内部错误。",
-            ),
             start_time=start_time,
             params_input=params_input,
         )

@@ -122,9 +122,11 @@ def _read_positive_int_env(name: str, default: int) -> int:
         return default
     try:
         parsed = int(raw_value)
-    except ValueError:
-        return default
-    return parsed if parsed > 0 else default
+    except ValueError as exc:
+        raise ValueError(f"{name} 必须是正整数。") from exc
+    if parsed <= 0:
+        raise ValueError(f"{name} 必须是正整数。")
+    return parsed
 
 
 def get_context_compaction_config() -> ContextCompactionConfig:
@@ -167,17 +169,6 @@ def _item_to_dict(item: TResponseInputItem) -> dict[str, Any]:
     if hasattr(item, "model_dump"):
         return item.model_dump(mode="python")
     return dict(item)
-
-
-def _item_type(item: TResponseInputItem) -> str:
-    raw_item = _item_to_dict(item)
-    return str(raw_item.get("type", "message"))
-
-
-def _item_role(item: TResponseInputItem) -> str | None:
-    raw_item = _item_to_dict(item)
-    role = raw_item.get("role")
-    return role if isinstance(role, str) else None
 
 
 def _is_summary_message(item: TResponseInputItem) -> bool:

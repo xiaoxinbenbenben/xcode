@@ -206,17 +206,6 @@ def edit_file(
             params_input=params_input,
             path_resolved=path_resolved,
         )
-    except Exception as exc:
-        return error_from_failure(
-            ToolFailure(
-                code="INTERNAL_ERROR",
-                message=str(exc),
-                text="编辑文件时发生内部错误。",
-            ),
-            start_time=start_time,
-            params_input=params_input,
-            path_resolved=path_resolved,
-        )
 
 
 def write_file(
@@ -321,17 +310,6 @@ def write_file(
                 code="EXECUTION_ERROR",
                 message=str(exc),
                 text="写入文件时发生磁盘读写错误。",
-            ),
-            start_time=start_time,
-            params_input=params_input,
-            path_resolved=path_resolved,
-        )
-    except Exception as exc:
-        return error_from_failure(
-            ToolFailure(
-                code="INTERNAL_ERROR",
-                message=str(exc),
-                text="写入文件时发生内部错误。",
             ),
             start_time=start_time,
             params_input=params_input,

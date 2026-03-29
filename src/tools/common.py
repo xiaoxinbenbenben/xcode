@@ -237,9 +237,11 @@ def _read_positive_int_env(name: str, default: int) -> int:
         return default
     try:
         parsed = int(raw_value)
-    except ValueError:
-        return default
-    return parsed if parsed > 0 else default
+    except ValueError as exc:
+        raise ValueError(f"{name} 必须是正整数。") from exc
+    if parsed <= 0:
+        raise ValueError(f"{name} 必须是正整数。")
+    return parsed
 
 
 def get_tool_output_limits() -> ToolOutputLimits:

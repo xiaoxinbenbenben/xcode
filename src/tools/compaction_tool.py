@@ -12,7 +12,13 @@ async def compact_history(runtime_context: ToolRuntimeContext | None = None) -> 
     """显式压缩当前会话历史，并把 summary 写回 L3。"""
     start_time = start_timer()
     params_input: dict[str, str] = {}
-    active_runtime_context = runtime_context or ToolRuntimeContext()
+    if runtime_context is None:
+        raise ToolFailure(
+            code="NO_SESSION",
+            message="当前运行没有可压缩的 session。",
+            text="当前没有可压缩的会话历史。",
+        )
+    active_runtime_context = runtime_context
 
     try:
         # Compact 必须绑定到当前 CLI session；脱离 session 时无法改写历史。
@@ -74,17 +80,6 @@ async def compact_history(runtime_context: ToolRuntimeContext | None = None) -> 
     except ToolFailure as failure:
         return error_from_failure(
             failure,
-            start_time=start_time,
-            params_input=params_input,
-            session_id=active_runtime_context.session_id,
-        )
-    except Exception as exc:
-        return error_from_failure(
-            ToolFailure(
-                code="INTERNAL_ERROR",
-                message=str(exc),
-                text="压缩会话历史时发生内部错误。",
-            ),
             start_time=start_time,
             params_input=params_input,
             session_id=active_runtime_context.session_id,

@@ -158,7 +158,6 @@ def _status_marker(status: str) -> str:
         "cancelled": "[-]",
     }[status]
 
-
 def _build_user_text(
     summary: str,
     todos: list[dict[str, str]],
@@ -308,17 +307,6 @@ def todo_write(
     except ToolFailure as failure:
         return error_from_failure(
             failure,
-            start_time=start_time,
-            params_input=params_input,
-            session_id=active_runtime_context.session_id,
-        )
-    except Exception as exc:
-        return error_from_failure(
-            ToolFailure(
-                code="INTERNAL_ERROR",
-                message=str(exc),
-                text="更新 todo 列表时发生内部错误。",
-            ),
             start_time=start_time,
             params_input=params_input,
             session_id=active_runtime_context.session_id,
