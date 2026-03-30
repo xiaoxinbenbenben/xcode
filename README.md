@@ -9,6 +9,7 @@
 - 最小 CLI 交互与流式输出
 - SDK session 驱动的多轮记忆
 - 分层上下文构造
+- 本地 tracing：JSONL + HTML 审计页
 - 统一工具协议
 - 只读工具、编辑工具、Todo 工具、最小 Bash 工具
 - 工具输出统一截断与完整结果落盘
@@ -20,6 +21,8 @@
 - 最小 CLI 入口与流式输出
 - SDK session 驱动的最小多轮记忆
 - 最小上下文分层与拼装
+- 本地 tracing：`run_start / context_build / tool_call / tool_result / finish / session_summary`
+- trace 产物：`artifacts/traces/*.jsonl` + `artifacts/traces/*.html`
 - 长会话治理：`micro_compact`、`auto_compact`、`Compact`
 - `@file` 输入预处理：system reminder + 去重 + 数量上限
 - 统一工具响应协议
@@ -34,7 +37,7 @@
 
 ```text
 src/
-  runtime/   # agent 运行时、session、runner
+  runtime/   # agent 运行时、session、runner、tracing
   tools/     # 已实现工具
   context/   # 上下文分层、压缩、@file 预处理
   protocol/  # 工具统一响应协议
@@ -51,6 +54,7 @@ artifacts/   # 本地产物目录
 OPENAI_API_KEY=sk-...
 OPENAI_BASE_URL=https://your-compatible-endpoint/v1
 OPENAI_MODEL=gpt-5.2-codex
+TRACE_ENABLED=true
 ```
 
 安装依赖：
@@ -79,6 +83,7 @@ uv run python scripts/cli.py "列出当前项目根目录结构"
 - `@file`：只插入 reminder，不直接注入文件全文
 - 长会话：先 `micro_compact`，超阈值再 `auto_compact`
 - 工具大输出：只保留预览，完整内容写入 `artifacts/`
+- tracing：本地写入 JSONL 与 HTML 审计页，不依赖 SDK 官方 tracing
 
 ## 最小验证
 
@@ -94,10 +99,10 @@ uv run python scripts/cli.py --help
 
 当前版本仍然是原型，刻意没有实现这些能力：
 
-- tracing
 - PTY 终端
 - 强沙箱
 - 多工作区切换
+- 官方 tracing 接入
 - 更完整的提示词工程
 - 更精细的历史治理，例如按完整轮次压缩、summary 再压缩策略
 

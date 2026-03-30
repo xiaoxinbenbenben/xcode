@@ -156,6 +156,51 @@ def error_from_failure(
     )
 
 
+def run_traced_tool(
+    runtime_context: Any,
+    *,
+    tool_name: str,
+    params_input: dict[str, Any],
+    invoke: Any,
+) -> ToolResponse:
+    # tracing 只挂在 wrapper 边界：
+    # 这样既能统一记录工具事件，又不把日志逻辑散进每个工具主体。
+    if runtime_context is not None:
+        runtime_context.log_trace_tool_call(
+            tool_name=tool_name,
+            args=params_input,
+        )
+    result = invoke()
+    if runtime_context is not None:
+        runtime_context.log_trace_tool_result(
+            tool_name=tool_name,
+            result=result,
+        )
+    return result
+
+
+async def run_traced_tool_async(
+    runtime_context: Any,
+    *,
+    tool_name: str,
+    params_input: dict[str, Any],
+    invoke: Any,
+) -> ToolResponse:
+    # Compact 这类异步工具也走同一套 wrapper tracing 语义，避免同步/异步两套日志格式分叉。
+    if runtime_context is not None:
+        runtime_context.log_trace_tool_call(
+            tool_name=tool_name,
+            args=params_input,
+        )
+    result = await invoke()
+    if runtime_context is not None:
+        runtime_context.log_trace_tool_result(
+            tool_name=tool_name,
+            result=result,
+        )
+    return result
+
+
 def resolve_workspace_path(path: str) -> WorkspacePath:
     raw_path = path or "."
     candidate = Path(raw_path)

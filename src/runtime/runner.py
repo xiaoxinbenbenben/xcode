@@ -16,6 +16,7 @@ from src.context import build_context_bundle
 from src.runtime.agent_factory import build_root_agent
 from src.runtime.config import RuntimeConfig
 from src.runtime.session import CliSessionRuntime
+from src.runtime.tracing import extract_usage_from_raw_event_data
 from src.tools import AGENT_TOOLS
 
 
@@ -51,35 +52,56 @@ async def run_streamed(
 ) -> str:
     """执行一次流式 agent 运行，并把文本增量回传给调用方。"""
     configure_openai_runtime(config)
+    active_context = session_runtime.context if session_runtime is not None else None
     if session_runtime is not None:
         # tool context 需要知道当前模型名，手动 Compact 时会复用同一模型生成 summary。
         session_runtime.context.current_model = config.model
-    context_bundle = await build_context_bundle(
-        user_input=user_input,
-        session_runtime=session_runtime,
-        tool_names=[tool.name for tool in AGENT_TOOLS],
-        model_name=config.model,
-    )
-    agent = build_root_agent(
-        model=config.model,
-        instructions=context_bundle.build_agent_instructions(),
-    )
-    run_config = None
-    if session_runtime is not None:
-        # micro_compact 只影响“本轮送给模型的输入视图”，不直接改写底层 session 原文。
-        run_config = RunConfig(
-            session_input_callback=build_session_input_callback(context_bundle)
+        session_runtime.context.start_trace_run(
+            user_input=user_input,
+            model=config.model,
         )
-    result = Runner.run_streamed(
-        agent,
-        input=context_bundle.build_runner_input(),
-        session=session_runtime.session if session_runtime is not None else None,
-        context=session_runtime.context if session_runtime is not None else None,
-        run_config=run_config,
-    )
-
+    result = None
     saw_delta = False
+    usage: dict[str, int] | None = None
     try:
+        context_bundle = await build_context_bundle(
+            user_input=user_input,
+            session_runtime=session_runtime,
+            tool_names=[tool.name for tool in AGENT_TOOLS],
+            model_name=config.model,
+        )
+        if active_context is not None:
+            active_context.log_trace_context_build(
+                {
+                    "history_items": len(context_bundle.runtime.history_items),
+                    "current_turn_items": len(context_bundle.runtime.current_turn_items),
+                    "mentioned_files": list(context_bundle.runtime.mentioned_files),
+                    "summary": (
+                        context_bundle.runtime.summary.as_dict()
+                        if context_bundle.runtime.summary is not None
+                        else None
+                    ),
+                    "compaction": dict(context_bundle.runtime.compaction),
+                }
+            )
+        agent = build_root_agent(
+            model=config.model,
+            instructions=context_bundle.build_agent_instructions(),
+        )
+        run_config = None
+        if session_runtime is not None:
+            # micro_compact 只影响“本轮送给模型的输入视图”，不直接改写底层 session 原文。
+            run_config = RunConfig(
+                session_input_callback=build_session_input_callback(context_bundle)
+            )
+        result = Runner.run_streamed(
+            agent,
+            input=context_bundle.build_runner_input(),
+            session=session_runtime.session if session_runtime is not None else None,
+            context=session_runtime.context if session_runtime is not None else None,
+            run_config=run_config,
+        )
+
         async for event in result.stream_events():
             # 这里严格对齐官方 streaming 示例，避免误判事件层级。
             if (
@@ -89,8 +111,34 @@ async def run_streamed(
             ):
                 on_text_delta(event.data.delta)
                 saw_delta = True
+            if event.type == "raw_response_event":
+                usage = extract_usage_from_raw_event_data(event.data) or usage
     except KeyboardInterrupt:
-        result.cancel()
+        if result is not None:
+            result.cancel()
+        if active_context is not None:
+            active_context.log_trace_error(
+                stage="run",
+                message="用户中断了当前运行。",
+            )
+            active_context.finish_trace_run(
+                final_output="",
+                usage=usage,
+                status="cancelled",
+            )
+        raise
+    except Exception as exc:
+        if active_context is not None:
+            active_context.log_trace_error(
+                stage="run",
+                message=str(exc),
+                error_type=exc.__class__.__name__,
+            )
+            active_context.finish_trace_run(
+                final_output="",
+                usage=usage,
+                status="error",
+            )
         raise
 
     if isinstance(result.final_output, str):
@@ -101,4 +149,10 @@ async def run_streamed(
         final_output = str(result.final_output)
     if not saw_delta and final_output:
         on_text_delta(final_output)
+    if active_context is not None:
+        active_context.finish_trace_run(
+            final_output=final_output,
+            usage=usage,
+            status="success",
+        )
     return final_output

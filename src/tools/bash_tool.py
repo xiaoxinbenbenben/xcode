@@ -20,6 +20,7 @@ from src.tools.common import (
     error_from_failure,
     maybe_truncate_output_text,
     resolve_workspace_path,
+    run_traced_tool,
     start_timer,
 )
 
@@ -402,9 +403,22 @@ def _bash_tool(
     directory: str = ".",
     timeout_ms: int = DEFAULT_TIMEOUT_MS,
 ) -> ToolResponse:
-    # 这一版 Bash 还不依赖 runtime context，只保留同样的 wrapper 形态，便于后续统一扩展。
-    del ctx
-    return run_bash(command=command, directory=directory, timeout_ms=timeout_ms)
+    # Bash 主体仍然保持最小执行语义；wrapper 额外负责 tool tracing。
+    params_input = {
+        "command": command,
+        "directory": directory,
+        "timeout_ms": timeout_ms,
+    }
+    return run_traced_tool(
+        ctx.context,
+        tool_name="Bash",
+        params_input=params_input,
+        invoke=lambda: run_bash(
+            command=command,
+            directory=directory,
+            timeout_ms=timeout_ms,
+        ),
+    )
 
 
 bash_tool = function_tool(

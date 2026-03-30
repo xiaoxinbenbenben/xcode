@@ -14,6 +14,7 @@ from src.tools.common import (
     build_context,
     build_stats,
     error_from_failure,
+    run_traced_tool,
     start_timer,
 )
 
@@ -318,8 +319,21 @@ def _todo_write_tool(
     summary: str,
     todos: list[TodoInputItem],
 ) -> ToolResponse:
-    # SDK session 负责对话历史，这里的 runtime context 负责当前 todo 状态与归档元数据。
-    return todo_write(summary=summary, todos=todos, runtime_context=ctx.context)
+    # SDK session 负责对话历史，这里的 runtime context 负责 todo 状态与 tool tracing。
+    params_input = {
+        "summary": summary,
+        "todos": todos,
+    }
+    return run_traced_tool(
+        ctx.context,
+        tool_name="TodoWrite",
+        params_input=params_input,
+        invoke=lambda: todo_write(
+            summary=summary,
+            todos=todos,
+            runtime_context=ctx.context,
+        ),
+    )
 
 
 todo_write_tool = function_tool(

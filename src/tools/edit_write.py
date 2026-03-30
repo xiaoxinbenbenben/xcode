@@ -17,6 +17,7 @@ from src.tools.common import (
     read_workspace_text_file,
     require_existing_file_lock,
     resolve_workspace_path,
+    run_traced_tool,
     start_timer,
 )
 
@@ -323,11 +324,21 @@ def _edit_file_tool(
     old_string: str,
     new_string: str,
 ) -> ToolResponse:
-    return edit_file(
-        path=path,
-        old_string=old_string,
-        new_string=new_string,
-        runtime_context=ctx.context,
+    params_input = {
+        "path": path,
+        "old_string": old_string,
+        "new_string": new_string,
+    }
+    return run_traced_tool(
+        ctx.context,
+        tool_name="Edit",
+        params_input=params_input,
+        invoke=lambda: edit_file(
+            path=path,
+            old_string=old_string,
+            new_string=new_string,
+            runtime_context=ctx.context,
+        ),
     )
 
 
@@ -336,10 +347,19 @@ def _write_file_tool(
     path: str,
     content: str,
 ) -> ToolResponse:
-    return write_file(
-        path=path,
-        content=content,
-        runtime_context=ctx.context,
+    params_input = {
+        "path": path,
+        "content": content,
+    }
+    return run_traced_tool(
+        ctx.context,
+        tool_name="Write",
+        params_input=params_input,
+        invoke=lambda: write_file(
+            path=path,
+            content=content,
+            runtime_context=ctx.context,
+        ),
     )
 
 

@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from agents import TResponseInputItem
 
 from src.context.compaction import HistorySummary, SummaryGenerator, prepare_history_for_model
 from src.context.file_mentions import preprocess_user_input
-from src.runtime.session import CliSessionRuntime
+
+if TYPE_CHECKING:
+    from src.runtime.session import CliSessionRuntime
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CODE_LAW_PATH = PROJECT_ROOT / "code_law.md"

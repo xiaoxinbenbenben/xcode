@@ -5,7 +5,14 @@ from agents import RunContextWrapper, function_tool
 from src.context.compaction import compact_session_history
 from src.protocol import ToolResponse, success_response
 from src.runtime.session import ToolRuntimeContext
-from src.tools.common import ToolFailure, build_context, build_stats, error_from_failure, start_timer
+from src.tools.common import (
+    ToolFailure,
+    build_context,
+    build_stats,
+    error_from_failure,
+    run_traced_tool_async,
+    start_timer,
+)
 
 
 async def compact_history(runtime_context: ToolRuntimeContext | None = None) -> ToolResponse:
@@ -88,7 +95,12 @@ async def compact_history(runtime_context: ToolRuntimeContext | None = None) -> 
 
 async def _compact_tool(ctx: RunContextWrapper[ToolRuntimeContext]) -> ToolResponse:
     # 显式 Compact 和自动压缩复用同一后端，只是触发方式不同。
-    return await compact_history(runtime_context=ctx.context)
+    return await run_traced_tool_async(
+        ctx.context,
+        tool_name="Compact",
+        params_input={},
+        invoke=lambda: compact_history(runtime_context=ctx.context),
+    )
 
 
 compact_tool = function_tool(

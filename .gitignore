@@ -8,5 +8,6 @@ __pycache__/
 openai_compatible_check.py
 artifacts/tool-output/
 artifacts/compaction/
+artifacts/traces/
 artifacts/prompt_history.txt
 artifacts/todos/

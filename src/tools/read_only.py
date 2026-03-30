@@ -25,6 +25,7 @@ from src.tools.common import (
     normalize_posix,
     read_workspace_text_file,
     resolve_workspace_path,
+    run_traced_tool,
     should_skip_entry,
     sort_key_for_entry,
     start_timer,
@@ -643,33 +644,130 @@ def read_file(
         )
 
 
+def _ls_tool(
+    ctx: RunContextWrapper[ToolRuntimeContext],
+    path: str = ".",
+    offset: int = 0,
+    limit: int = 100,
+    include_hidden: bool = False,
+    ignore: list[str] | None = None,
+) -> ToolResponse:
+    params_input = {
+        "path": path,
+        "offset": offset,
+        "limit": limit,
+        "include_hidden": include_hidden,
+        "ignore": ignore,
+    }
+    return run_traced_tool(
+        ctx.context,
+        tool_name="LS",
+        params_input=params_input,
+        invoke=lambda: list_files(
+            path=path,
+            offset=offset,
+            limit=limit,
+            include_hidden=include_hidden,
+            ignore=ignore,
+        ),
+    )
+
+
+def _glob_tool(
+    ctx: RunContextWrapper[ToolRuntimeContext],
+    pattern: str,
+    path: str = ".",
+    limit: int = 50,
+    include_hidden: bool = False,
+    include_ignored: bool = False,
+) -> ToolResponse:
+    params_input = {
+        "pattern": pattern,
+        "path": path,
+        "limit": limit,
+        "include_hidden": include_hidden,
+        "include_ignored": include_ignored,
+    }
+    return run_traced_tool(
+        ctx.context,
+        tool_name="Glob",
+        params_input=params_input,
+        invoke=lambda: glob_search(
+            pattern=pattern,
+            path=path,
+            limit=limit,
+            include_hidden=include_hidden,
+            include_ignored=include_ignored,
+        ),
+    )
+
+
+def _grep_tool(
+    ctx: RunContextWrapper[ToolRuntimeContext],
+    pattern: str,
+    path: str = ".",
+    include: str | None = None,
+    case_sensitive: bool = False,
+    limit: int = 100,
+) -> ToolResponse:
+    params_input = {
+        "pattern": pattern,
+        "path": path,
+        "include": include,
+        "case_sensitive": case_sensitive,
+        "limit": limit,
+    }
+    return run_traced_tool(
+        ctx.context,
+        tool_name="Grep",
+        params_input=params_input,
+        invoke=lambda: grep_search(
+            pattern=pattern,
+            path=path,
+            include=include,
+            case_sensitive=case_sensitive,
+            limit=limit,
+        ),
+    )
+
+
 def _read_file_tool(
     ctx: RunContextWrapper[ToolRuntimeContext],
     path: str,
     start_line: int = 1,
     limit: int = 500,
 ) -> ToolResponse:
-    # SDK session 负责消息历史，这里的 runtime context 只负责本地文件快照。
-    return read_file(
-        path=path,
-        start_line=start_line,
-        limit=limit,
-        runtime_context=ctx.context,
+    # SDK session 负责消息历史，这里的 runtime context 负责文件快照和 tool tracing。
+    params_input = {
+        "path": path,
+        "start_line": start_line,
+        "limit": limit,
+    }
+    return run_traced_tool(
+        ctx.context,
+        tool_name="Read",
+        params_input=params_input,
+        invoke=lambda: read_file(
+            path=path,
+            start_line=start_line,
+            limit=limit,
+            runtime_context=ctx.context,
+        ),
     )
 
 
 ls_tool = function_tool(
-    list_files,
+    _ls_tool,
     name_override="LS",
     description_override="列出目录或文件条目，用于先看工作区结构。",
 )
 glob_tool = function_tool(
-    glob_search,
+    _glob_tool,
     name_override="Glob",
     description_override="按名称或 glob 模式查找文件路径。",
 )
 grep_tool = function_tool(
-    grep_search,
+    _grep_tool,
     name_override="Grep",
     description_override="按内容搜索代码，返回文件、行号和匹配文本。",
 )

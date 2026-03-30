@@ -8,6 +8,7 @@ from uuid import uuid4
 from agents import SQLiteSession
 
 from src.context.compaction import HistorySummary
+from src.runtime.tracing import LocalTraceLogger, build_trace_logger
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 # 当前阶段的本地快照表只服务于安全编辑链路，
@@ -54,6 +55,8 @@ class ToolRuntimeContext:
     last_persisted_todo_fingerprint: str | None = None
     history_summary: HistorySummary | None = None
     history_compaction_archive_path: str | None = None
+    trace_logger: LocalTraceLogger | None = None
+    active_trace_run_id: str | None = None
 
     def remember_read_snapshot(
         self,
@@ -117,6 +120,87 @@ class ToolRuntimeContext:
         self.history_summary = summary
         self.history_compaction_archive_path = archive_path
 
+    def start_trace_run(self, *, user_input: str, model: str) -> str | None:
+        if self.trace_logger is None:
+            self.active_trace_run_id = None
+            return None
+        self.active_trace_run_id = self.trace_logger.start_run(
+            user_input=user_input,
+            model=model,
+        )
+        return self.active_trace_run_id
+
+    def log_trace_context_build(self, payload: dict[str, object]) -> None:
+        # context_build 只记录“这一轮送给模型前的关键治理信息”，不把整段上下文全文重写进 trace。
+        if self.trace_logger is None or self.active_trace_run_id is None:
+            return
+        self.trace_logger.log_context_build(
+            run_id=self.active_trace_run_id,
+            payload=payload,
+        )
+
+    def log_trace_tool_call(self, *, tool_name: str, args: dict[str, object]) -> None:
+        if self.trace_logger is None or self.active_trace_run_id is None:
+            return
+        self.trace_logger.log_tool_call(
+            run_id=self.active_trace_run_id,
+            tool_name=tool_name,
+            args=args,
+        )
+
+    def log_trace_tool_result(self, *, tool_name: str, result: dict[str, object]) -> None:
+        if self.trace_logger is None or self.active_trace_run_id is None:
+            return
+        self.trace_logger.log_tool_result(
+            run_id=self.active_trace_run_id,
+            tool_name=tool_name,
+            result=result,
+        )
+        if result.get("status") == "error":
+            self.trace_logger.log_error(
+                run_id=self.active_trace_run_id,
+                stage="tool_execution",
+                message=str(result.get("text", "工具执行失败。")),
+                tool=tool_name,
+            )
+
+    def log_trace_error(self, *, stage: str, message: str, **payload: object) -> None:
+        if self.trace_logger is None:
+            return
+        self.trace_logger.log_error(
+            run_id=self.active_trace_run_id,
+            stage=stage,
+            message=message,
+            **payload,
+        )
+
+    def finish_trace_run(
+        self,
+        *,
+        final_output: str,
+        usage: dict[str, int] | None,
+        status: str = "success",
+    ) -> None:
+        if self.trace_logger is None or self.active_trace_run_id is None:
+            self.active_trace_run_id = None
+            return
+        self.trace_logger.log_finish(
+            run_id=self.active_trace_run_id,
+            final_output=final_output,
+            usage=usage,
+        )
+        self.trace_logger.log_run_end(
+            run_id=self.active_trace_run_id,
+            status=status,
+            usage=usage,
+        )
+        self.active_trace_run_id = None
+
+    def close_trace_session(self) -> None:
+        if self.trace_logger is None:
+            return
+        self.trace_logger.log_session_summary()
+
 
 @dataclass(slots=True)
 class CliSessionRuntime:
@@ -126,6 +210,7 @@ class CliSessionRuntime:
     context: ToolRuntimeContext
 
     def close(self) -> None:
+        self.context.close_trace_session()
         self.session.close()
 
 
@@ -134,7 +219,11 @@ def build_cli_session_runtime() -> CliSessionRuntime:
     # 因此 session id 每次启动都新建，不做恢复旧会话。
     session_id = f"cli-{uuid4().hex}"
     session = SQLiteSession(session_id=session_id, db_path=":memory:")
-    context = ToolRuntimeContext(session_id=session_id, session=session)
+    context = ToolRuntimeContext(
+        session_id=session_id,
+        session=session,
+        trace_logger=build_trace_logger(session_id),
+    )
     return CliSessionRuntime(
         session_id=session_id,
         session=session,
