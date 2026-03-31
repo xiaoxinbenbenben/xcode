@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import json
+import re
+import threading
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -11,10 +15,55 @@ from src.context.compaction import HistorySummary
 from src.runtime.tracing import LocalTraceLogger, build_trace_logger
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-# 当前阶段的本地快照表只服务于安全编辑链路，
-# 现在再加上 Todo 状态，但仍不承担摘要、裁剪或跨进程恢复等更重的治理职责。
+DEFAULT_SESSION_ROOT = PROJECT_ROOT / "artifacts" / "sessions"
 DEFAULT_MAX_READ_SNAPSHOTS = 256
 DEFAULT_TODO_PERSIST_DIR = PROJECT_ROOT / "artifacts" / "todos"
+_WHITESPACE_RE = re.compile(r"\s+")
+_FILE_MENTION_RE = re.compile(r"@\S+")
+
+
+def _utc_now() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _build_default_session_name() -> str:
+    # 默认名只承担“先能识别这个会话”的职责，不让 session 一开始就是空标题。
+    return f"未命名会话 {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+
+
+def _build_session_name_from_user_input(user_input: str) -> str | None:
+    # 第一条有效用户输入只做一个很薄的标题裁剪，不额外调用模型。
+    text = _FILE_MENTION_RE.sub("", user_input).strip()
+    if not text:
+        return None
+    text = _WHITESPACE_RE.sub(" ", text)
+    return text[:24].strip() or None
+
+
+def _default_session_root() -> Path:
+    return DEFAULT_SESSION_ROOT
+
+
+def _session_pointer_path(session_root: Path) -> Path:
+    return session_root / "current_session.json"
+
+
+@dataclass(slots=True)
+class SessionMeta:
+    session_id: str
+    name: str
+    created_at: str
+    last_active_at: str
+    default_name: bool = True
+
+    def as_dict(self) -> dict[str, str | bool]:
+        return {
+            "session_id": self.session_id,
+            "name": self.name,
+            "created_at": self.created_at,
+            "last_active_at": self.last_active_at,
+            "default_name": self.default_name,
+        }
 
 
 @dataclass(slots=True)
@@ -44,8 +93,16 @@ class ToolRuntimeContext:
     # 这张表按“规范化路径 -> 最近一次成功 Read 的快照”保存。
     # 同一路径再次读取时只覆盖自己，不会把别的文件快照挤掉。
     session_id: str = "detached-session"
+    session_name: str = "detached-session"
     session: SQLiteSession | None = None
+    session_root: Path = field(default_factory=_default_session_root)
+    session_dir: Path = field(default_factory=lambda: _default_session_root() / "detached-session")
+    tasks_dir: Path = field(default_factory=lambda: _default_session_root() / "detached-session" / "tasks")
+    traces_dir: Path = field(default_factory=lambda: _default_session_root() / "detached-session" / "traces")
+    compaction_dir: Path = field(default_factory=lambda: _default_session_root() / "detached-session" / "compaction")
     current_model: str | None = None
+    main_model: str | None = None
+    light_model: str | None = None
     read_snapshots: OrderedDict[str, ReadSnapshot] = field(default_factory=OrderedDict)
     max_read_snapshots: int = DEFAULT_MAX_READ_SNAPSHOTS
     todo_state: TodoState | None = None
@@ -57,6 +114,8 @@ class ToolRuntimeContext:
     history_compaction_archive_path: str | None = None
     trace_logger: LocalTraceLogger | None = None
     active_trace_run_id: str | None = None
+    background_notifications: list[dict[str, object]] = field(default_factory=list)
+    background_notification_lock: threading.Lock = field(default_factory=threading.Lock)
 
     def remember_read_snapshot(
         self,
@@ -119,6 +178,17 @@ class ToolRuntimeContext:
         # 这份结构化 summary 供后续 L3 上下文直接复用，不再重复从文本里反解析。
         self.history_summary = summary
         self.history_compaction_archive_path = archive_path
+
+    def enqueue_background_notification(self, *, task_id: int, text: str) -> None:
+        # 后台线程和主线程会并发读写这一队列，所以这里统一加锁。
+        with self.background_notification_lock:
+            self.background_notifications.append({"task_id": task_id, "text": text})
+
+    def drain_background_notifications(self) -> list[dict[str, object]]:
+        with self.background_notification_lock:
+            notifications = list(self.background_notifications)
+            self.background_notifications.clear()
+        return notifications
 
     def start_trace_run(self, *, user_input: str, model: str) -> str | None:
         if self.trace_logger is None:
@@ -204,28 +274,164 @@ class ToolRuntimeContext:
 
 @dataclass(slots=True)
 class CliSessionRuntime:
-    # SDK session 负责对话历史，本地 context 负责工具侧的轻量状态。
+    # SDK session 负责对话历史，本地 context 负责工具侧和会话级轻量状态。
     session_id: str
     session: SQLiteSession
     context: ToolRuntimeContext
+    session_dir: Path
+    session_root: Path
+    meta_path: Path
+    meta: SessionMeta
+
+    @property
+    def session_name(self) -> str:
+        return self.meta.name
+
+    def update_name_from_user_input(self, user_input: str) -> None:
+        # 第一条有效用户输入到来后，再把默认标题改成一个简短可识别的名字。
+        self.meta.last_active_at = _utc_now()
+        if self.meta.default_name:
+            derived_name = _build_session_name_from_user_input(user_input)
+            if derived_name:
+                self.meta.name = derived_name
+                self.meta.default_name = False
+                self.context.session_name = derived_name
+        _save_session_meta(self.meta_path, self.meta)
 
     def close(self) -> None:
         self.context.close_trace_session()
         self.session.close()
 
 
-def build_cli_session_runtime() -> CliSessionRuntime:
-    # 这一步先只保证“一次 CLI 启动里的多轮记忆”。
-    # 因此 session id 每次启动都新建，不做恢复旧会话。
-    session_id = f"cli-{uuid4().hex}"
-    session = SQLiteSession(session_id=session_id, db_path=":memory:")
-    context = ToolRuntimeContext(
-        session_id=session_id,
-        session=session,
-        trace_logger=build_trace_logger(session_id),
+def _load_session_meta(meta_path: Path, *, session_id: str) -> SessionMeta:
+    if not meta_path.exists():
+        now = _utc_now()
+        return SessionMeta(
+            session_id=session_id,
+            name=_build_default_session_name(),
+            created_at=now,
+            last_active_at=now,
+            default_name=True,
+        )
+
+    raw = json.loads(meta_path.read_text(encoding="utf-8"))
+    return SessionMeta(
+        session_id=str(raw.get("session_id") or session_id),
+        name=str(raw.get("name") or _build_default_session_name()),
+        created_at=str(raw.get("created_at") or _utc_now()),
+        last_active_at=str(raw.get("last_active_at") or _utc_now()),
+        default_name=bool(raw.get("default_name", False)),
     )
+
+
+def _save_session_meta(meta_path: Path, meta: SessionMeta) -> None:
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    meta_path.write_text(
+        json.dumps(meta.as_dict(), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _write_current_session_pointer(pointer_path: Path, session_id: str) -> None:
+    pointer_path.parent.mkdir(parents=True, exist_ok=True)
+    pointer_path.write_text(
+        json.dumps({"session_id": session_id}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _read_current_session_pointer(pointer_path: Path) -> str | None:
+    if not pointer_path.exists():
+        return None
+    raw = json.loads(pointer_path.read_text(encoding="utf-8"))
+    session_id = raw.get("session_id")
+    return str(session_id) if isinstance(session_id, str) and session_id else None
+
+
+def list_saved_sessions(*, session_root: Path | None = None) -> list[SessionMeta]:
+    active_root = session_root or _default_session_root()
+    if not active_root.exists():
+        return []
+
+    sessions: list[SessionMeta] = []
+    for child in active_root.iterdir():
+        if not child.is_dir():
+            continue
+        meta_path = child / "session_meta.json"
+        session_id = child.name
+        if not meta_path.exists():
+            continue
+        sessions.append(_load_session_meta(meta_path, session_id=session_id))
+
+    return sorted(sessions, key=lambda item: item.last_active_at, reverse=True)
+
+
+def build_cli_session_runtime(
+    *,
+    session_root: Path | None = None,
+    session_id: str | None = None,
+    new_session: bool = False,
+    trace_enabled: bool | None = None,
+) -> CliSessionRuntime:
+    # 第一版先把“启动时恢复/选择 session”做好，不做运行中的 session 切换。
+    active_root = session_root or _default_session_root()
+    active_root.mkdir(parents=True, exist_ok=True)
+    pointer_path = _session_pointer_path(active_root)
+
+    if new_session:
+        active_session_id = session_id or f"session-{uuid4().hex[:12]}"
+    else:
+        active_session_id = session_id or _read_current_session_pointer(pointer_path)
+        if active_session_id is None:
+            active_session_id = f"session-{uuid4().hex[:12]}"
+
+    session_dir = active_root / active_session_id
+    if session_id is not None and not new_session and not session_dir.exists():
+        raise FileNotFoundError(f"未找到 session: {session_id}")
+    session_dir.mkdir(parents=True, exist_ok=True)
+    tasks_dir = session_dir / "tasks"
+    traces_dir = session_dir / "traces"
+    compaction_dir = session_dir / "compaction"
+    tasks_dir.mkdir(parents=True, exist_ok=True)
+    traces_dir.mkdir(parents=True, exist_ok=True)
+    compaction_dir.mkdir(parents=True, exist_ok=True)
+
+    meta_path = session_dir / "session_meta.json"
+    meta = _load_session_meta(meta_path, session_id=active_session_id)
+    meta.last_active_at = _utc_now()
+    _save_session_meta(meta_path, meta)
+    _write_current_session_pointer(pointer_path, active_session_id)
+
+    session = SQLiteSession(
+        session_id=active_session_id,
+        db_path=session_dir / "session.db",
+    )
+    context = ToolRuntimeContext(
+        session_id=active_session_id,
+        session_name=meta.name,
+        session=session,
+        session_root=active_root,
+        session_dir=session_dir,
+        tasks_dir=tasks_dir,
+        traces_dir=traces_dir,
+        compaction_dir=compaction_dir,
+        trace_logger=build_trace_logger(
+            active_session_id,
+            trace_dir=traces_dir,
+            enabled=trace_enabled,
+        ),
+    )
+
+    # 旧进程退出后，残留的 running 任务要被诚实地标成失败，而不是继续伪装活着。
+    from src.tasks.background import mark_interrupted_running_tasks
+
+    mark_interrupted_running_tasks(tasks_dir=tasks_dir)
     return CliSessionRuntime(
-        session_id=session_id,
+        session_id=active_session_id,
         session=session,
         context=context,
+        session_dir=session_dir,
+        session_root=active_root,
+        meta_path=meta_path,
+        meta=meta,
     )

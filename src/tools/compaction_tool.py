@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from agents import RunContextWrapper, function_tool
 
-from src.context.compaction import compact_session_history
+from dataclasses import replace
+
+from src.context.compaction import compact_session_history, get_context_compaction_config
 from src.protocol import ToolResponse, success_response
 from src.runtime.session import ToolRuntimeContext
 from src.tools.common import (
@@ -46,6 +48,10 @@ async def compact_history(runtime_context: ToolRuntimeContext | None = None) -> 
             session=active_runtime_context.session,
             session_id=active_runtime_context.session_id,
             model=active_runtime_context.current_model,
+            config=replace(
+                get_context_compaction_config(),
+                archive_dir=active_runtime_context.compaction_dir,
+            ),
             force=True,
         )
         if not compaction_result.compacted or compaction_result.summary is None:

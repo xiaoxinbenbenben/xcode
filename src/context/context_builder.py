@@ -1,13 +1,19 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agents import TResponseInputItem
 
-from src.context.compaction import HistorySummary, SummaryGenerator, prepare_history_for_model
+from src.context.compaction import (
+    HistorySummary,
+    SummaryGenerator,
+    get_context_compaction_config,
+    prepare_history_for_model,
+)
 from src.context.file_mentions import preprocess_user_input
+from src.tools.skill_loader import SkillLoader, get_default_skill_loader, read_skills_prompt_char_budget
 
 if TYPE_CHECKING:
     from src.runtime.session import CliSessionRuntime
@@ -32,6 +38,13 @@ TOOL_RULE_TEXT = {
     "TodoWrite": "Use TodoWrite to manage multi-step coding tasks; always submit the full list and keep at most one in_progress item.",
     "Bash": "Use Bash only for non-interactive local commands such as tests or build commands; do not use it when LS / Glob / Grep / Read are a better fit.",
     "Compact": "Use Compact when the session is getting too long and you need the system to archive older history into an L3 summary.",
+    "TaskCreate": "Use TaskCreate to create a persistent task node for work that must survive compaction or restart.",
+    "TaskUpdate": "Use TaskUpdate to change task status, dependencies, owner or result fields.",
+    "TaskList": "Use TaskList to inspect the current session task graph at a glance.",
+    "TaskGet": "Use TaskGet to inspect one task in detail.",
+    "TaskRun": "Use TaskRun to delegate an analysis task to a subagent and get back only a short summary.",
+    "BackgroundRun": "Use BackgroundRun for long local commands that should keep running without blocking the current turn.",
+    "Skill": "Use Skill to load an in-project skill by name when the user mentions it or the task clearly matches that skill.",
 }
 
 
@@ -93,6 +106,29 @@ class ContextBundle:
         return list(self.runtime.current_turn_items)
 
 
+def _build_skill_catalog_text(loader: SkillLoader) -> str:
+    # L1 只放 skills 简表，不把正文长期塞进稳定层。
+    skills = loader.list_skills()
+    if not skills:
+        return ""
+
+    budget = read_skills_prompt_char_budget()
+    lines = ["- Available skills:"]
+    used_chars = sum(len(line) for line in lines)
+
+    for index, skill in enumerate(skills):
+        line = f"  - {skill.name}: {skill.description}"
+        projected = used_chars + len(line) + 1
+        if projected > budget:
+            remaining = len(skills) - index
+            lines.append(f"  - ... and {remaining} more skills")
+            break
+        lines.append(line)
+        used_chars = projected
+
+    return "\n".join(lines)
+
+
 def build_stable_context_layer(tool_names: list[str]) -> StableContextLayer:
     # 只给真实已落地工具生成规则，不提前为未来能力编规则。
     tool_rule_lines = [
@@ -100,6 +136,10 @@ def build_stable_context_layer(tool_names: list[str]) -> StableContextLayer:
         for tool_name in tool_names
         if tool_name in TOOL_RULE_TEXT
     ]
+    if "Skill" in tool_names:
+        skill_catalog = _build_skill_catalog_text(get_default_skill_loader())
+        if skill_catalog:
+            tool_rule_lines.append(skill_catalog)
     return StableContextLayer(
         system_prompt=MINIMAL_SYSTEM_PROMPT,
         tool_rules="\n".join(tool_rule_lines),
@@ -115,6 +155,17 @@ def build_repo_rule_layer(path: Path = CODE_LAW_PATH) -> RepoRuleLayer:
     )
 
 
+def _build_background_results_item(notifications: list[dict[str, object]]) -> TResponseInputItem:
+    # 后台结果只回注入简短摘要，完整日志仍留在任务图或产物文件里回查。
+    lines = ["<background-results>"]
+    lines.extend(f"- {item['text']}" for item in notifications)
+    lines.append("</background-results>")
+    return {
+        "role": "system",
+        "content": "\n".join(lines),
+    }
+
+
 async def build_context_bundle(
     *,
     user_input: str,
@@ -126,7 +177,7 @@ async def build_context_bundle(
     stable_layer = build_stable_context_layer(tool_names)
     repo_rule_layer = build_repo_rule_layer()
     preprocessed_input = preprocess_user_input(user_input)
-    current_turn_items = preprocessed_input.current_turn_items
+    current_turn_items = list(preprocessed_input.current_turn_items)
     history_items: list[TResponseInputItem] = []
     summary: HistorySummary | None = None
     compaction: dict[str, str | int | bool | None] = {
@@ -139,6 +190,16 @@ async def build_context_bundle(
         "archive_path": None,
     }
     if session_runtime is not None:
+        notifications = session_runtime.context.drain_background_notifications()
+        if notifications:
+            current_turn_items = [
+                _build_background_results_item(notifications),
+                *current_turn_items,
+            ]
+        compaction_config = replace(
+            get_context_compaction_config(),
+            archive_dir=session_runtime.context.compaction_dir,
+        )
         prepared_history = await prepare_history_for_model(
             session=session_runtime.session,
             session_id=session_runtime.session_id,
@@ -148,6 +209,7 @@ async def build_context_bundle(
             current_turn_items=current_turn_items,
             existing_summary=session_runtime.context.history_summary,
             summary_generator=summary_generator,
+            config=compaction_config,
         )
         history_items = prepared_history.history_items
         summary = prepared_history.summary

@@ -12,6 +12,7 @@ class RuntimeConfig:
 
     api_key: str
     model: str
+    light_model: str
     base_url: str | None = None
 
 
@@ -29,6 +30,7 @@ def load_runtime_config() -> RuntimeConfig:
 
     api_key = normalize_api_key(os.getenv("OPENAI_API_KEY") or "")
     model = (os.getenv("OPENAI_MODEL") or "gpt-5.2").strip() or "gpt-5.2"
+    light_model = (os.getenv("LIGHT_OPENAI_MODEL") or "gpt-5").strip() or "gpt-5"
     base_url = (os.getenv("OPENAI_BASE_URL") or "").strip() or None
 
     if not api_key:
@@ -37,5 +39,6 @@ def load_runtime_config() -> RuntimeConfig:
     return RuntimeConfig(
         api_key=api_key,
         model=model,
+        light_model=light_model,
         base_url=base_url,
     )

@@ -17,7 +17,7 @@ from src.runtime.agent_factory import build_root_agent
 from src.runtime.config import RuntimeConfig
 from src.runtime.session import CliSessionRuntime
 from src.runtime.tracing import extract_usage_from_raw_event_data
-from src.tools import AGENT_TOOLS
+from src.tools.registry import AGENT_TOOLS
 
 
 def configure_openai_runtime(config: RuntimeConfig) -> None:
@@ -56,6 +56,8 @@ async def run_streamed(
     if session_runtime is not None:
         # tool context 需要知道当前模型名，手动 Compact 时会复用同一模型生成 summary。
         session_runtime.context.current_model = config.model
+        session_runtime.context.main_model = config.model
+        session_runtime.context.light_model = config.light_model
         session_runtime.context.start_trace_run(
             user_input=user_input,
             model=config.model,

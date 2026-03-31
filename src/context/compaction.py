@@ -376,7 +376,10 @@ def _archive_history_items(
         json.dumps([_item_to_dict(item) for item in history_items], ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    return str(archive_path.relative_to(PROJECT_ROOT))
+    try:
+        return str(archive_path.relative_to(PROJECT_ROOT))
+    except ValueError:
+        return str(archive_path)
 
 
 async def compact_session_history(
@@ -425,11 +428,12 @@ async def prepare_history_for_model(
     current_turn_items: list[TResponseInputItem],
     existing_summary: HistorySummary | None = None,
     summary_generator: SummaryGenerator | None = None,
+    config: ContextCompactionConfig | None = None,
 ) -> PreparedHistory:
     # 这是 L3 的统一入口：先做 view 级 micro_compact，再按 token 估算决定是否真的改写 session。
-    config = get_context_compaction_config()
+    active_config = config or get_context_compaction_config()
     raw_items = list(await session.get_items())
-    history_items, micro_stats = micro_compact_history_items(raw_items, config=config.micro)
+    history_items, micro_stats = micro_compact_history_items(raw_items, config=active_config.micro)
     estimated_tokens = estimate_context_tokens(
         model=model,
         stable_text=stable_text,
@@ -441,12 +445,12 @@ async def prepare_history_for_model(
     archive_path: str | None = None
     summary = existing_summary
 
-    if raw_items and len(raw_items) >= config.min_messages and estimated_tokens >= config.trigger_tokens:
+    if raw_items and len(raw_items) >= active_config.min_messages and estimated_tokens >= active_config.trigger_tokens:
         compacted = await compact_session_history(
             session=session,
             session_id=session_id,
             model=model,
-            config=config,
+            config=active_config,
             summary_generator=summary_generator,
         )
         if compacted.compacted:
@@ -454,7 +458,7 @@ async def prepare_history_for_model(
             archive_path = compacted.archive_path
             summary = compacted.summary
             raw_items = list(await session.get_items())
-            history_items, micro_stats = micro_compact_history_items(raw_items, config=config.micro)
+            history_items, micro_stats = micro_compact_history_items(raw_items, config=active_config.micro)
             estimated_tokens = estimate_context_tokens(
                 model=model,
                 stable_text=stable_text,

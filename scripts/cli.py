@@ -20,12 +20,32 @@ if str(PROJECT_ROOT) not in sys.path:
 from src.runtime.config import load_runtime_config
 from src.runtime.config import RuntimeConfig
 from src.runtime.runner import run_streamed
-from src.runtime.session import CliSessionRuntime, build_cli_session_runtime
+from src.runtime.session import (
+    CliSessionRuntime,
+    build_cli_session_runtime,
+    list_saved_sessions,
+)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Minimal CLI wrapper around an OpenAI Agents SDK agent."
+    )
+    session_group = parser.add_mutually_exclusive_group()
+    session_group.add_argument(
+        "--session",
+        dest="session_id",
+        help="Restore a specific session id.",
+    )
+    session_group.add_argument(
+        "--new-session",
+        action="store_true",
+        help="Create a new session instead of restoring the latest one.",
+    )
+    parser.add_argument(
+        "--list-sessions",
+        action="store_true",
+        help="List saved sessions and exit.",
     )
     parser.add_argument(
         "prompt",
@@ -61,6 +81,7 @@ def stream_reply(
     config: RuntimeConfig,
     session_runtime: CliSessionRuntime,
 ) -> None:
+    session_runtime.update_name_from_user_input(user_input)
     print("Agent>")
     asyncio.run(
         run_streamed(
@@ -81,9 +102,22 @@ def print_connection_error() -> None:
     )
 
 
-def run_repl(config: RuntimeConfig) -> int:
+def run_repl(
+    config: RuntimeConfig,
+    *,
+    session_id: str | None = None,
+    new_session: bool = False,
+) -> int:
     session = build_prompt_session()
-    session_runtime = build_cli_session_runtime()
+    try:
+        session_runtime = build_cli_session_runtime(
+            session_id=session_id,
+            new_session=new_session,
+        )
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(f"Session: {session_runtime.session_name} ({session_runtime.session_id})")
     print("Enter 发送 | Esc Enter 换行 | Ctrl-D / Ctrl-C 退出")
 
     try:
@@ -118,8 +152,24 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
     config = load_runtime_config()
+    if args.list_sessions:
+        sessions = list_saved_sessions()
+        if not sessions:
+            print("No saved sessions.")
+            return 0
+        for session in sessions:
+            print(f"{session.session_id}\t{session.name}\t{session.last_active_at}")
+        return 0
+
     if args.prompt is not None:
-        session_runtime = build_cli_session_runtime()
+        try:
+            session_runtime = build_cli_session_runtime(
+                session_id=args.session_id,
+                new_session=args.new_session,
+            )
+        except FileNotFoundError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
         try:
             user_input = args.prompt.strip()
             if not user_input:
@@ -134,7 +184,11 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             session_runtime.close()
 
-    return run_repl(config)
+    return run_repl(
+        config,
+        session_id=args.session_id,
+        new_session=args.new_session,
+    )
 
 
 if __name__ == "__main__":

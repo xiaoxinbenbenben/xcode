@@ -1,7 +1,7 @@
 from agents import Agent
 
 from src.context import build_repo_rule_layer, build_stable_context_layer
-from src.tools import AGENT_TOOLS
+from src.tools.registry import AGENT_TOOLS
 
 def _build_default_instructions() -> str:
     # 这里复用 context builder 的 L1/L2 拼装，避免稳定提示词再次散落回 runtime。

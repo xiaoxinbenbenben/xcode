@@ -4,7 +4,7 @@ import html
 import json
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -326,8 +326,18 @@ class LocalTraceLogger:
         )
 
 
-def build_trace_logger(session_id: str) -> LocalTraceLogger | None:
+def build_trace_logger(
+    session_id: str,
+    *,
+    trace_dir: Path | None = None,
+    enabled: bool | None = None,
+) -> LocalTraceLogger | None:
+    # tracing 配置默认仍从环境变量读取，但 session 层可以覆盖目录和开关。
     config = load_trace_config()
+    if trace_dir is not None:
+        config = replace(config, trace_dir=trace_dir)
+    if enabled is not None:
+        config = replace(config, enabled=enabled)
     if not config.enabled:
         return None
     return LocalTraceLogger(session_id=session_id, config=config)
