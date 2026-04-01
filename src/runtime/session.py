@@ -7,12 +7,16 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from agents import SQLiteSession
 
 from src.context.compaction import HistorySummary
 from src.runtime.tracing import LocalTraceLogger, build_trace_logger
+
+if TYPE_CHECKING:
+    from src.tasks.agent_team import AgentTeamRuntime
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SESSION_ROOT = PROJECT_ROOT / "artifacts" / "sessions"
@@ -100,9 +104,14 @@ class ToolRuntimeContext:
     tasks_dir: Path = field(default_factory=lambda: _default_session_root() / "detached-session" / "tasks")
     traces_dir: Path = field(default_factory=lambda: _default_session_root() / "detached-session" / "traces")
     compaction_dir: Path = field(default_factory=lambda: _default_session_root() / "detached-session" / "compaction")
+    # team_dir 和 actor_name 是 AgentTeam phase 1 新加的最小协作状态。
+    # lead 和 teammate 共享一套 session 目录，但通过 actor_name 区分发送者身份。
+    team_dir: Path = field(default_factory=lambda: _default_session_root() / "detached-session" / "team")
     current_model: str | None = None
     main_model: str | None = None
     light_model: str | None = None
+    actor_name: str = "team-lead"
+    team_runtime: AgentTeamRuntime | None = None
     read_snapshots: OrderedDict[str, ReadSnapshot] = field(default_factory=OrderedDict)
     max_read_snapshots: int = DEFAULT_MAX_READ_SNAPSHOTS
     todo_state: TodoState | None = None
@@ -299,6 +308,8 @@ class CliSessionRuntime:
         _save_session_meta(self.meta_path, self.meta)
 
     def close(self) -> None:
+        if self.context.team_runtime is not None:
+            self.context.team_runtime.close()
         self.context.close_trace_session()
         self.session.close()
 
@@ -392,9 +403,12 @@ def build_cli_session_runtime(
     tasks_dir = session_dir / "tasks"
     traces_dir = session_dir / "traces"
     compaction_dir = session_dir / "compaction"
+    # AgentTeam phase 1 先把 team 状态和 transcript 都收进同一 session 根目录下。
+    team_dir = session_dir / "team"
     tasks_dir.mkdir(parents=True, exist_ok=True)
     traces_dir.mkdir(parents=True, exist_ok=True)
     compaction_dir.mkdir(parents=True, exist_ok=True)
+    team_dir.mkdir(parents=True, exist_ok=True)
 
     meta_path = session_dir / "session_meta.json"
     meta = _load_session_meta(meta_path, session_id=active_session_id)
@@ -415,6 +429,7 @@ def build_cli_session_runtime(
         tasks_dir=tasks_dir,
         traces_dir=traces_dir,
         compaction_dir=compaction_dir,
+        team_dir=team_dir,
         trace_logger=build_trace_logger(
             active_session_id,
             trace_dir=traces_dir,
@@ -424,8 +439,11 @@ def build_cli_session_runtime(
 
     # 旧进程退出后，残留的 running 任务要被诚实地标成失败，而不是继续伪装活着。
     from src.tasks.background import mark_interrupted_running_tasks
+    from src.tasks.agent_team import build_agent_team_runtime
 
     mark_interrupted_running_tasks(tasks_dir=tasks_dir)
+    # team runtime 是 session 级对象：CLI 每次恢复 session 时一并恢复 team 状态视图。
+    context.team_runtime = build_agent_team_runtime(runtime_context=context)
     return CliSessionRuntime(
         session_id=active_session_id,
         session=session,

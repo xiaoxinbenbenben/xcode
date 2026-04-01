@@ -7,11 +7,14 @@
 当前版本已经具备：
 
 - 最小 CLI 交互与流式输出
-- SDK session 驱动的多轮记忆
+- 可恢复、可选择的 session 多轮记忆
 - 分层上下文构造
 - 本地 tracing：JSONL + HTML 审计页
 - 统一工具协议
 - 只读工具、编辑工具、Todo 工具、最小 Bash 工具
+- 持久化 task graph、subagent、background task
+- skills
+- AgentTeam phase 1/2：teammate、team 协议
 - 工具输出统一截断与完整结果落盘
 - 长会话 `compaction`
 - `@file` 输入预处理与噪声控制
@@ -19,7 +22,7 @@
 ## 当前已经实现的能力
 
 - 最小 CLI 入口与流式输出
-- SDK session 驱动的最小多轮记忆
+- 可恢复、可命名、可选择的 session
 - 最小上下文分层与拼装
 - 本地 tracing：`run_start / context_build / tool_call / tool_result / finish / session_summary`
 - trace 产物：`artifacts/traces/*.jsonl` + `artifacts/traces/*.html`
@@ -32,6 +35,16 @@
 - 多步骤任务工具：`TodoWrite`
 - 最小 Bash 工具：非交互、工作区内执行、带基本超时和最小安全规则
 - 统一工具输出截断：超长结果预览 + 落盘 + 回查路径
+- 持久化任务系统：`TaskCreate`、`TaskUpdate`、`TaskList`、`TaskGet`
+- 一次性分析子代理：`TaskRun`
+- 后台命令执行：`BackgroundRun`
+- Skills：`SkillLoader` + `Skill`
+- AgentTeam：
+  - `SpawnTeammate`
+  - `ListTeammates`
+  - `SendMessage`
+  - `ShutdownRequest`
+  - `PlanApproval`
 
 ## 当前结构
 
@@ -40,6 +53,7 @@ src/
   runtime/   # agent 运行时、session、runner、tracing
   tools/     # 已实现工具
   context/   # 上下文分层、压缩、@file 预处理
+  tasks/     # task graph、subagent、background、agent team
   protocol/  # 工具统一响应协议
 scripts/     # CLI 入口
 tests/       # 单元测试
@@ -69,6 +83,24 @@ uv sync
 uv run python scripts/cli.py
 ```
 
+列出已有 session：
+
+```bash
+uv run python scripts/cli.py --list-sessions
+```
+
+启动一个新 session：
+
+```bash
+uv run python scripts/cli.py --new-session
+```
+
+恢复指定 session：
+
+```bash
+uv run python scripts/cli.py --session <session_id>
+```
+
 或单次调用：
 
 ```bash
@@ -84,6 +116,8 @@ uv run python scripts/cli.py "列出当前项目根目录结构"
 - 长会话：先 `micro_compact`，超阈值再 `auto_compact`
 - 工具大输出：只保留预览，完整内容写入 `artifacts/`
 - tracing：本地写入 JSONL 与 HTML 审计页，不依赖 SDK 官方 tracing
+- task graph：独立持久化到 session 目录，不受 `micro_compact` 影响
+- AgentTeam：teammate 消息会以 `<team-messages>` 注入 lead 的下一轮 L3
 
 ## 最小验证
 
@@ -103,6 +137,9 @@ uv run python scripts/cli.py --help
 - 强沙箱
 - 多工作区切换
 - 官方 tracing 接入
+- JSONL 文件邮箱版 AgentTeam
+- teammate 独立 session / 独立进程
+- AgentTeam 的 task/worktree 绑定
 - 更完整的提示词工程
 - 更精细的历史治理，例如按完整轮次压缩、summary 再压缩策略
 

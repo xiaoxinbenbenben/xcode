@@ -6,6 +6,7 @@ from src.tools.edit_write import FILE_EDIT_TOOLS
 from src.tools.read_only import READ_ONLY_TOOLS
 from src.tools.skill_tool import SKILL_TOOLS
 from src.tools.task_tools import TASK_TOOLS
+from src.tools.team_tools import TEAM_TOOLS
 from src.tools.todo_write import TODO_TOOLS
 
 AGENT_TOOLS = [
@@ -16,6 +17,7 @@ AGENT_TOOLS = [
     *COMPACTION_TOOLS,
     *TASK_TOOLS,
     *SKILL_TOOLS,
+    *TEAM_TOOLS,
 ]
 
 __all__ = [
@@ -26,5 +28,6 @@ __all__ = [
     "COMPACTION_TOOLS",
     "TASK_TOOLS",
     "SKILL_TOOLS",
+    "TEAM_TOOLS",
     "AGENT_TOOLS",
 ]

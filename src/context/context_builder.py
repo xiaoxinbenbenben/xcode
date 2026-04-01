@@ -45,6 +45,11 @@ TOOL_RULE_TEXT = {
     "TaskRun": "Use TaskRun to delegate an analysis task to a subagent and get back only a short summary.",
     "BackgroundRun": "Use BackgroundRun for long local commands that should keep running without blocking the current turn.",
     "Skill": "Use Skill to load an in-project skill by name when the user mentions it or the task clearly matches that skill.",
+    "SpawnTeammate": "Use SpawnTeammate to create a long-lived teammate inside the current session team.",
+    "ListTeammates": "Use ListTeammates to inspect current teammate status before assigning more work.",
+    "SendMessage": "Use SendMessage to send a short explicit message to team-lead or a teammate.",
+    "ShutdownRequest": "Use ShutdownRequest to ask a teammate to stop through the phase-2 request/response protocol.",
+    "PlanApproval": "Use PlanApproval to submit a plan for lead review or respond to a teammate plan review request.",
 }
 
 
@@ -166,6 +171,31 @@ def _build_background_results_item(notifications: list[dict[str, object]]) -> TR
     }
 
 
+def _build_team_messages_item(messages: list[dict[str, object]]) -> TResponseInputItem:
+    # team-lead 只需要看到 teammate 发来的简短消息，不直接注入完整 teammate transcript。
+    lines = ["<team-messages>"]
+    for item in messages:
+        summary = str(item.get("summary") or "").strip()
+        content = str(item.get("content") or "").strip()
+        header = f"- from {item['from']} to {item['to']} ({item['type']})"
+        request_id = str(item.get("request_id") or "").strip()
+        request_status = str(item.get("request_status") or "").strip()
+        if summary:
+            header += f": {summary}"
+        if request_id:
+            header += f" [request_id={request_id}]"
+        if request_status:
+            header += f" [status={request_status}]"
+        lines.append(header)
+        if content:
+            lines.append(content)
+    lines.append("</team-messages>")
+    return {
+        "role": "system",
+        "content": "\n".join(lines),
+    }
+
+
 async def build_context_bundle(
     *,
     user_input: str,
@@ -174,6 +204,8 @@ async def build_context_bundle(
     model_name: str,
     summary_generator: SummaryGenerator | None = None,
 ) -> ContextBundle:
+    # 这里统一组装当前轮真正送给模型的 L1/L2/L3。
+    # AgentTeam、background result、compaction 都在这一层汇合。
     stable_layer = build_stable_context_layer(tool_names)
     repo_rule_layer = build_repo_rule_layer()
     preprocessed_input = preprocess_user_input(user_input)
@@ -190,12 +222,22 @@ async def build_context_bundle(
         "archive_path": None,
     }
     if session_runtime is not None:
+        # 先注入 teammate 发给 lead 的消息，再注入 background 结果。
+        # 两者都属于“上一轮之外发生的系统事件”，不直接改写原始 session history。
+        if session_runtime.context.team_runtime is not None:
+            team_messages = session_runtime.context.team_runtime.drain_lead_messages()
+            if team_messages:
+                current_turn_items = [
+                    _build_team_messages_item(team_messages),
+                    *current_turn_items,
+                ]
         notifications = session_runtime.context.drain_background_notifications()
         if notifications:
             current_turn_items = [
                 _build_background_results_item(notifications),
                 *current_turn_items,
             ]
+        # compaction 仍然只治理普通历史项，不碰 team/task 这些外部持久化状态。
         compaction_config = replace(
             get_context_compaction_config(),
             archive_dir=session_runtime.context.compaction_dir,
