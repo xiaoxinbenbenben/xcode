@@ -5,6 +5,7 @@ from agents import RunContextWrapper, function_tool
 from src.protocol import ToolResponse, success_response
 from src.runtime.session import ToolRuntimeContext
 from src.tasks.agent_team import (
+    claim_next_task,
     request_plan_review,
     request_shutdown,
     respond_plan_review,
@@ -325,6 +326,47 @@ def _plan_approval(
         )
 
 
+def _claim_task(
+    *,
+    runtime_context: ToolRuntimeContext | None = None,
+) -> ToolResponse:
+    # ClaimTask 只给 teammate 用，让 worker 显式确认“下一条工作来自 task board”。
+    start_time = start_timer()
+    params_input: dict[str, object] = {}
+    try:
+        if runtime_context is None:
+            raise ToolFailure(
+                code="NO_SESSION",
+                message="当前没有可用 session。",
+                text="当前没有可用会话，暂时无法认领任务。",
+            )
+        result = claim_next_task(runtime_context)
+        task = result.get("task")
+        if task is None:
+            text = "当前没有可认领的新任务。"
+        elif result.get("claimed"):
+            text = f"已认领任务 task_{task['id']}：{task['title']}"
+        else:
+            text = f"当前仍在处理 task_{task['id']}：{task['title']}"
+        return success_response(
+            data=result,
+            text=text,
+            stats=build_stats(start_time),
+            context=build_context(
+                params_input=params_input,
+                session_id=runtime_context.session_id,
+            ),
+        )
+    except ToolFailure as failure:
+        session_id = runtime_context.session_id if runtime_context is not None else "detached-session"
+        return error_from_failure(
+            failure,
+            start_time=start_time,
+            params_input=params_input,
+            session_id=session_id,
+        )
+
+
 def _idle(
     *,
     summary: str | None = None,
@@ -511,6 +553,16 @@ def _plan_approval_tool(
     )
 
 
+def _claim_task_tool(ctx: RunContextWrapper[ToolRuntimeContext]) -> ToolResponse:
+    # teammate 的 ClaimTask 不接受外部参数，避免模型自己拼 task_id 破坏认领规则。
+    return run_traced_tool(
+        ctx.context,
+        tool_name="ClaimTask",
+        params_input={},
+        invoke=lambda: _claim_task(runtime_context=ctx.context),
+    )
+
+
 def _idle_tool(
     ctx: RunContextWrapper[ToolRuntimeContext],
     summary: str | None = None,
@@ -557,6 +609,11 @@ plan_approval_tool = function_tool(
     name_override="PlanApproval",
     description_override="发起或回应一次计划审阅请求。mode=request 时发起，mode=response 时回应。",
 )
+claim_task_tool = function_tool(
+    _claim_task_tool,
+    name_override="ClaimTask",
+    description_override="让当前 teammate 从 task board 认领一个可执行任务；如果已有任务则返回当前任务。",
+)
 idle_tool = function_tool(
     _idle_tool,
     name_override="Idle",
@@ -575,6 +632,7 @@ TEAM_TOOLS = [
 
 __all__ = [
     "TEAM_TOOLS",
+    "claim_task_tool",
     "idle_tool",
     "spawn_teammate_tool",
     "list_teammates_tool",

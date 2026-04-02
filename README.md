@@ -14,7 +14,7 @@
 - 只读工具、编辑工具、Todo 工具、最小 Bash 工具
 - 持久化 task graph、subagent、background task
 - skills
-- AgentTeam phase 1/2：teammate、team 协议
+- AgentTeam phase 1/2/3：teammate、team 协议、task claim
 - 工具输出统一截断与完整结果落盘
 - 长会话 `compaction`
 - `@file` 输入预处理与噪声控制
@@ -45,6 +45,8 @@
   - `SendMessage`
   - `ShutdownRequest`
   - `PlanApproval`
+  - phase 3 task claim：`ClaimTask`（teammate 内部工具）
+  - task lease：`owner + owner_agent_id + lease_expires_at`
 
 ## 当前结构
 
@@ -118,6 +120,7 @@ uv run python scripts/cli.py "列出当前项目根目录结构"
 - tracing：本地写入 JSONL 与 HTML 审计页，不依赖 SDK 官方 tracing
 - task graph：独立持久化到 session 目录，不受 `micro_compact` 影响
 - AgentTeam：teammate 消息会以 `<team-messages>` 注入 lead 的下一轮 L3
+- AgentTeam phase 3：teammate 在没有显式消息时可从 task board 认领可执行任务
 
 ## 最小验证
 
@@ -131,11 +134,22 @@ uv run python scripts/cli.py --help
 
 ## 当前边界
 
-当前版本仍然是原型，刻意没有实现这些能力：
+当前版本仍然是原型，刻意没有实现这些更完整的能力：
 
-- PTY 终端
-- 强沙箱
-- 多工作区切换
+- PTY-backed terminal session
+  - 当前只有单次非交互 shell 执行，还没有“真实终端会话”能力
+- 强沙箱 / approval policy engine
+  - 当前只有最小工作区边界和命令限制，还没有正式的审批策略与强沙箱执行层
+- 多工作区与 workspace routing
+  - 当前默认只服务一个项目工作区，还没有多 workspace 选择、切换和路由
+- 事件驱动运行时（event-driven runtime）
+  - 当前 runtime 仍然以“流式文本回调 + 直接打印”为主，不是统一的结构化事件流
+- 工具生命周期事件流（tool lifecycle stream）
+  - 当前流式层主要消费文本增量，还没有把 tool intent、tool start、tool finish、tool result 做成一等流事件暴露给 UI
+- 状态化 TUI / REPL
+  - 当前还是 `prompt_toolkit` CLI，不是基于 React + Ink 的事件驱动 TUI
+- `workspace_root` 与 `agent_code_root` 解耦
+  - 当前 agent 代码根、默认工作区根、任务执行根还没有彻底拆开
 - 官方 tracing 接入
 - JSONL 文件邮箱版 AgentTeam
 - teammate 独立 session / 独立进程

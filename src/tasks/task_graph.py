@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from src.tasks.task_store import get_task, list_tasks, save_task
@@ -12,6 +13,21 @@ VALID_TASK_STATUSES = {
     "cancelled",
     "failed",
 }
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _format_utc(value: datetime) -> str:
+    return value.isoformat().replace("+00:00", "Z")
+
+
+def _parse_utc(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    normalized = value.replace("Z", "+00:00")
+    return datetime.fromisoformat(normalized)
 
 
 def _merge_ids(existing: list[int], new_ids: list[int]) -> list[int]:
@@ -29,6 +45,63 @@ def _clear_dependency(tasks_dir, completed_task_id: int) -> None:
             blocked_id for blocked_id in task["blockedBy"] if blocked_id != completed_task_id
         ]
         save_task(tasks_dir, task)
+
+
+def _task_is_claimable(task: dict[str, Any], *, now: datetime) -> bool:
+    # blockedBy 只要还有内容，这个任务就不允许 teammate 认领。
+    if task.get("blockedBy"):
+        return False
+
+    status = str(task.get("status") or "")
+    if status == "pending":
+        return True
+    if status != "running":
+        return False
+
+    lease_expires_at = _parse_utc(task.get("lease_expires_at"))
+    if lease_expires_at is None:
+        return True
+    return lease_expires_at <= now
+
+
+def claim_task(
+    *,
+    tasks_dir,
+    owner_agent_id: str,
+    owner: str,
+    lease_seconds: int,
+) -> dict[str, Any] | None:
+    # claim 先按 id 顺序扫描，拿到第一条可执行且 lease 可用的任务。
+    now = _utc_now()
+    lease_expires_at = _format_utc(now + timedelta(seconds=lease_seconds))
+
+    for task in list_tasks(tasks_dir):
+        if not _task_is_claimable(task, now=now):
+            continue
+        task["status"] = "running"
+        task["owner"] = owner
+        task["owner_agent_id"] = owner_agent_id
+        task["lease_expires_at"] = lease_expires_at
+        return save_task(tasks_dir, task)
+
+    return None
+
+
+def renew_task_lease(
+    *,
+    tasks_dir,
+    task_id: int,
+    owner_agent_id: str,
+    lease_seconds: int,
+) -> dict[str, Any]:
+    # 续租只允许当前执行实例自己刷新，避免别的 teammate 偷走任务。
+    task = get_task(tasks_dir, task_id)
+    if str(task.get("owner_agent_id") or "") != owner_agent_id:
+        raise ValueError(f"task_{task_id} 当前不属于 {owner_agent_id}")
+
+    now = _utc_now()
+    task["lease_expires_at"] = _format_utc(now + timedelta(seconds=lease_seconds))
+    return save_task(tasks_dir, task)
 
 
 def update_task(

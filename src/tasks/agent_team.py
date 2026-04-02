@@ -12,19 +12,19 @@ from uuid import uuid4
 from agents import Agent, Runner
 
 from src.runtime.session import ToolRuntimeContext
+from src.tasks.task_graph import claim_task as claim_persistent_task, renew_task_lease, update_task
+from src.tasks.task_store import get_task
 from src.tools.common import ToolFailure
 from src.tools.read_only import READ_ONLY_TOOLS
 from src.tools.edit_write import FILE_EDIT_TOOLS
 from src.tools.bash_tool import BASH_TOOLS
 from src.tools.task_tools import TASK_TOOLS
 
-# 这个模块只实现 AgentTeam 的 Phase 1：
-# team-lead、长寿命 teammate、内存消息队列、transcript。
-# 暂不接 task claim、worktree、独立 session。
-#
-# Phase 2 在这个基础上只再补两类“请求-响应”协议：
-# shutdown_request / shutdown_response
-# plan_review_request / plan_review_response
+# 这个模块当前覆盖 AgentTeam phase 1 到 phase 3 的最小闭环：
+# team-lead、长寿命 teammate、内存消息队列、transcript，
+# 再加上 phase 2 的请求协议和 phase 3 的 task claim / lease / heartbeat。
+# worktree、独立 session 仍然留到后续阶段。
+TEAM_TASK_LEASE_SECONDS = 30
 
 
 def _utc_now() -> str:
@@ -103,6 +103,54 @@ def _build_message_input(message: dict[str, object]) -> dict[str, str]:
     }
 
 
+def _build_task_input(task: dict[str, object]) -> dict[str, str]:
+    # task_assignment 不走普通消息摘要，而是直接告诉 teammate 当前认领到的任务。
+    parts = [
+        "你刚刚认领到了一个任务。",
+        "type: task_assignment",
+        f"task_id: {task['id']}",
+        f"title: {task['title']}",
+    ]
+    summary = str(task.get("summary") or "").strip()
+    if summary:
+        parts.append(f"summary: {summary}")
+    prompt = str(task.get("prompt") or "").strip()
+    if prompt:
+        parts.extend(["", prompt])
+    return {
+        "role": "user",
+        "content": "\n".join(parts).strip(),
+    }
+
+
+def _build_teammate_identity_input(
+    *,
+    team_id: str,
+    worker: "TeammateWorker",
+    current_task_id: int | None,
+) -> dict[str, str]:
+    # 这层 stable reinjection 用来告诉 teammate“我是谁、当前归属什么任务”。
+    # 它不依赖历史 transcript，所以不会被 compact 吞掉。
+    current_task_text = str(current_task_id) if current_task_id is not None else "none"
+    content = "\n".join(
+        [
+            "<teammate-identity>",
+            f"name: {worker.name}",
+            f"agent_id: {worker.agent_id}",
+            f"role: {worker.role}",
+            f"team_id: {team_id}",
+            f"parent_session_id: {worker.context.session_id}",
+            f"current_task_id: {current_task_text}",
+            "tools: file tools, shell tools, task tools, SendMessage, ClaimTask, Idle, ShutdownResponse, PlanApproval",
+            "</teammate-identity>",
+        ]
+    )
+    return {
+        "role": "system",
+        "content": content,
+    }
+
+
 def _build_teammate_instructions(*, name: str, role: str, prompt: str) -> str:
     # teammate 的 prompt 只解释身份和协作方式，不把主代理的整套 L1 再复制一遍。
     sections = [
@@ -110,7 +158,9 @@ def _build_teammate_instructions(*, name: str, role: str, prompt: str) -> str:
         f"Your role is: {role}.",
         "You are a long-lived worker inside the current team.",
         "Read team messages, use tools if needed, and work on the current request only.",
+        "If there is no direct message, you may claim one available task from the task board.",
         "If you need to report progress or results back to team-lead, use the SendMessage tool.",
+        "If you need to explicitly claim an available task, use the ClaimTask tool.",
         "If you need lead to review a plan, use the PlanApproval tool in request mode.",
         "Do not spawn new teammates.",
     ]
@@ -122,7 +172,13 @@ def _build_teammate_instructions(*, name: str, role: str, prompt: str) -> str:
 
 def _build_teammate_tools():
     # teammate 工具集先复用现有工作工具，再补最小 team phase 2 工具。
-    from src.tools.team_tools import idle_tool, plan_approval_tool, send_message_tool, shutdown_response_tool
+    from src.tools.team_tools import (
+        claim_task_tool,
+        idle_tool,
+        plan_approval_tool,
+        send_message_tool,
+        shutdown_response_tool,
+    )
 
     return [
         *READ_ONLY_TOOLS,
@@ -130,6 +186,7 @@ def _build_teammate_tools():
         *BASH_TOOLS,
         *TASK_TOOLS,
         send_message_tool,
+        claim_task_tool,
         plan_approval_tool,
         shutdown_response_tool,
         idle_tool,
@@ -331,6 +388,84 @@ class AgentTeamRuntime:
             trace_logger=None,
         )
 
+    def _claim_task_for_worker(self, worker: TeammateWorker) -> dict[str, object] | None:
+        # teammate 空闲时，先尝试从 task board 里拿一条未被阻塞的任务。
+        claimed_task = claim_persistent_task(
+            tasks_dir=self.base_context.tasks_dir,
+            owner_agent_id=worker.agent_id,
+            owner=f"teammate:{worker.name}",
+            lease_seconds=TEAM_TASK_LEASE_SECONDS,
+        )
+        if claimed_task is None:
+            return None
+
+        self._update_member(
+            worker.name,
+            status="working",
+            current_task_id=claimed_task["id"],
+        )
+        self._append_transcript_event(
+            worker,
+            _build_transcript_event(
+                event_type="task_claimed",
+                payload={
+                    "task_id": claimed_task["id"],
+                    "title": claimed_task["title"],
+                },
+            ),
+        )
+        return claimed_task
+
+    def _renew_task_lease_for_worker(self, worker: TeammateWorker, *, task_id: int) -> dict[str, object]:
+        # 当前 teammate 只给自己持有的任务续租，避免别的 worker 篡改执行权。
+        task = renew_task_lease(
+            tasks_dir=self.base_context.tasks_dir,
+            task_id=task_id,
+            owner_agent_id=worker.agent_id,
+            lease_seconds=TEAM_TASK_LEASE_SECONDS,
+        )
+        self._update_member(
+            worker.name,
+            current_task_id=task_id,
+        )
+        return task
+
+    def _finish_claimed_task(
+        self,
+        worker: TeammateWorker,
+        *,
+        task_id: int,
+        final_output: str,
+    ) -> dict[str, object]:
+        # 如果 teammate 跑完这一轮后任务还停留在自己的 running lease 下，
+        # 就把这轮结论直接写回任务图，作为最小 phase 3 闭环。
+        task = get_task(self.base_context.tasks_dir, task_id)
+        if task.get("status") == "running" and task.get("owner_agent_id") == worker.agent_id:
+            task = update_task(
+                tasks_dir=self.base_context.tasks_dir,
+                task_id=task_id,
+                status="completed",
+                owner=f"teammate:{worker.name}",
+                result_summary=final_output,
+                error=None,
+            )
+        self._update_member(
+            worker.name,
+            status="idle",
+            current_task_id=None,
+        )
+        self._append_transcript_event(
+            worker,
+            _build_transcript_event(
+                event_type="task_finished",
+                payload={
+                    "task_id": task_id,
+                    "status": task.get("status"),
+                },
+            ),
+        )
+        return task
+
     def _run_worker_loop(self, worker: TeammateWorker) -> None:
         # teammate 的生命周期是：创建后先进入 working，再立即转成 idle 等待消息。
         # 这能保证它“活着”，但不会在无任务时空转占用太多资源。
@@ -345,14 +480,18 @@ class AgentTeamRuntime:
         self._update_member(worker.name, status="idle")
 
         while not worker.stop_event.is_set():
+            claimed_task: dict[str, object] | None = None
             try:
                 message = worker.message_queue.get(timeout=0.2)
             except queue.Empty:
-                continue
+                claimed_task = self._claim_task_for_worker(worker)
+                if claimed_task is None:
+                    continue
+                message = None
 
             # shutdown 请求在 Phase 2 里先走最小自动批准路径：
             # 先回 shutdown_response，再让线程进入 stopping/stopped。
-            if message["type"] == "shutdown_request":
+            if message is not None and message["type"] == "shutdown_request":
                 self._append_transcript_event(
                     worker,
                     _build_transcript_event(
@@ -372,13 +511,20 @@ class AgentTeamRuntime:
 
             # 普通消息会先写 transcript，再交给 teammate 跑一轮。
             self._update_member(worker.name, status="working")
-            self._append_transcript_event(
-                worker,
-                _build_transcript_event(
-                    event_type="message",
-                    payload=message,
-                ),
-            )
+            if claimed_task is None:
+                self._append_transcript_event(
+                    worker,
+                    _build_transcript_event(
+                        event_type="message",
+                        payload=message,
+                    ),
+                )
+                current_input = _build_message_input(message)
+                current_task_id = None
+            else:
+                self._renew_task_lease_for_worker(worker, task_id=int(claimed_task["id"]))
+                current_input = _build_task_input(claimed_task)
+                current_task_id = int(claimed_task["id"])
 
             agent = Agent(
                 name=worker.name,
@@ -390,7 +536,15 @@ class AgentTeamRuntime:
                 model=worker.context.main_model or worker.context.current_model or "gpt-5.2-codex",
                 tools=_build_teammate_tools(),
             )
-            input_items = [*worker.history_items, _build_message_input(message)]
+            input_items = [
+                _build_teammate_identity_input(
+                    team_id=str(self._state["team_id"]),
+                    worker=worker,
+                    current_task_id=current_task_id,
+                ),
+                *worker.history_items,
+                current_input,
+            ]
 
             try:
                 # Phase 1 不给 teammate 独立 session。
@@ -411,6 +565,15 @@ class AgentTeamRuntime:
                         payload={"message": str(exc)},
                     ),
                 )
+                if claimed_task is not None:
+                    update_task(
+                        tasks_dir=self.base_context.tasks_dir,
+                        task_id=int(claimed_task["id"]),
+                        status="failed",
+                        owner=f"teammate:{worker.name}",
+                        error=str(exc),
+                    )
+                    self._update_member(worker.name, current_task_id=None)
                 self._update_member(worker.name, status="failed")
                 return
 
@@ -424,7 +587,14 @@ class AgentTeamRuntime:
                     payload={"content": final_output},
                 ),
             )
-            self._update_member(worker.name, status="idle")
+            if claimed_task is None:
+                self._update_member(worker.name, status="idle")
+            else:
+                self._finish_claimed_task(
+                    worker,
+                    task_id=int(claimed_task["id"]),
+                    final_output=final_output,
+                )
 
         # 收到停止请求后，线程最终会收敛到 stopped。
         self._update_member(worker.name, status="stopped")
@@ -459,7 +629,6 @@ class AgentTeamRuntime:
                 "status": "spawning",
                 "current_task_id": None,
                 "current_worktree": None,
-                "last_heartbeat_at": None,
                 "transcript_path": str(transcript_path.relative_to(self.base_context.session_dir)),
             }
             if existing_member is None:
@@ -502,6 +671,29 @@ class AgentTeamRuntime:
             "team_id": self._state["team_id"],
             "team_name": self._state["team_name"],
             "members": [dict(member) for member in self._state["members"]],
+        }
+
+    def claim_next_task(self, *, actor_name: str) -> dict[str, object]:
+        # ClaimTask 只给 teammate 用，lead 不直接参与任务认领。
+        worker = self._workers.get(actor_name)
+        member = self._find_member(actor_name)
+        if worker is None or member is None:
+            raise ToolFailure(
+                code="NOT_FOUND",
+                message=f"未找到 teammate: {actor_name}",
+                text=f"未找到 teammate '{actor_name}'。",
+            )
+        current_task_id = member.get("current_task_id")
+        if current_task_id is not None:
+            return {
+                "claimed": False,
+                "task": get_task(self.base_context.tasks_dir, int(current_task_id)),
+            }
+
+        claimed_task = self._claim_task_for_worker(worker)
+        return {
+            "claimed": claimed_task is not None,
+            "task": claimed_task,
         }
 
     def send_message(
@@ -809,6 +1001,18 @@ def request_shutdown(
         from_name=runtime_context.actor_name,
         teammate_name=name,
         content=content,
+    )
+
+
+def claim_next_task(runtime_context: ToolRuntimeContext) -> dict[str, object]:
+    if runtime_context.team_runtime is None:
+        raise ToolFailure(
+            code="NO_TEAM_RUNTIME",
+            message="当前没有 team runtime。",
+            text="当前 session 还没有可用的 team runtime。",
+        )
+    return runtime_context.team_runtime.claim_next_task(
+        actor_name=runtime_context.actor_name,
     )
 
 
