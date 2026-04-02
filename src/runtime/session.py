@@ -56,6 +56,7 @@ def _session_pointer_path(session_root: Path) -> Path:
 class SessionMeta:
     session_id: str
     name: str
+    workspace_root: str
     created_at: str
     last_active_at: str
     default_name: bool = True
@@ -64,6 +65,7 @@ class SessionMeta:
         return {
             "session_id": self.session_id,
             "name": self.name,
+            "workspace_root": self.workspace_root,
             "created_at": self.created_at,
             "last_active_at": self.last_active_at,
             "default_name": self.default_name,
@@ -104,6 +106,10 @@ class ToolRuntimeContext:
     tasks_dir: Path = field(default_factory=lambda: _default_session_root() / "detached-session" / "tasks")
     traces_dir: Path = field(default_factory=lambda: _default_session_root() / "detached-session" / "traces")
     compaction_dir: Path = field(default_factory=lambda: _default_session_root() / "detached-session" / "compaction")
+    # workspace_root 表示这次会话服务哪个仓库根目录。
+    # execution_root 表示当前工具默认在哪个目录执行；phase 4 会把它切到 worktree。
+    workspace_root: Path = field(default_factory=lambda: PROJECT_ROOT)
+    execution_root: Path = field(default_factory=lambda: PROJECT_ROOT)
     # team_dir 和 actor_name 是 AgentTeam phase 1 新加的最小协作状态。
     # lead 和 teammate 共享一套 session 目录，但通过 actor_name 区分发送者身份。
     team_dir: Path = field(default_factory=lambda: _default_session_root() / "detached-session" / "team")
@@ -143,6 +149,14 @@ class ToolRuntimeContext:
 
         while len(self.read_snapshots) > self.max_read_snapshots:
             self.read_snapshots.popitem(last=False)
+
+    def set_execution_root(self, execution_root: Path) -> None:
+        # execution_root 变化时，把旧目录的读快照清掉，避免把另一个 worktree 的版本继续当成当前锁。
+        resolved_root = execution_root.resolve()
+        if resolved_root == self.execution_root:
+            return
+        self.execution_root = resolved_root
+        self.read_snapshots.clear()
 
     def get_read_snapshot(self, path: str) -> ReadSnapshot | None:
         snapshot = self.read_snapshots.get(path)
@@ -320,6 +334,7 @@ def _load_session_meta(meta_path: Path, *, session_id: str) -> SessionMeta:
         return SessionMeta(
             session_id=session_id,
             name=_build_default_session_name(),
+            workspace_root=str(PROJECT_ROOT.resolve()),
             created_at=now,
             last_active_at=now,
             default_name=True,
@@ -329,6 +344,7 @@ def _load_session_meta(meta_path: Path, *, session_id: str) -> SessionMeta:
     return SessionMeta(
         session_id=str(raw.get("session_id") or session_id),
         name=str(raw.get("name") or _build_default_session_name()),
+        workspace_root=str(raw.get("workspace_root") or PROJECT_ROOT.resolve()),
         created_at=str(raw.get("created_at") or _utc_now()),
         last_active_at=str(raw.get("last_active_at") or _utc_now()),
         default_name=bool(raw.get("default_name", False)),
@@ -382,12 +398,18 @@ def build_cli_session_runtime(
     session_root: Path | None = None,
     session_id: str | None = None,
     new_session: bool = False,
+    workspace_root: Path | None = None,
     trace_enabled: bool | None = None,
 ) -> CliSessionRuntime:
     # 第一版先把“启动时恢复/选择 session”做好，不做运行中的 session 切换。
     active_root = session_root or _default_session_root()
     active_root.mkdir(parents=True, exist_ok=True)
     pointer_path = _session_pointer_path(active_root)
+
+    # workspace_root 是这条 session 服务哪个项目目录的稳定绑定。
+    # 第一版只允许在创建新 session 时指定，避免把旧历史和新目录硬拼在一起。
+    if workspace_root is not None and not new_session:
+        raise ValueError("`--workspace` 只能和 `--new-session` 一起使用。")
 
     if new_session:
         active_session_id = session_id or f"session-{uuid4().hex[:12]}"
@@ -412,6 +434,11 @@ def build_cli_session_runtime(
 
     meta_path = session_dir / "session_meta.json"
     meta = _load_session_meta(meta_path, session_id=active_session_id)
+    if new_session:
+        resolved_workspace_root = (workspace_root or PROJECT_ROOT).resolve()
+        meta.workspace_root = str(resolved_workspace_root)
+    else:
+        resolved_workspace_root = Path(meta.workspace_root).resolve()
     meta.last_active_at = _utc_now()
     _save_session_meta(meta_path, meta)
     _write_current_session_pointer(pointer_path, active_session_id)
@@ -429,6 +456,8 @@ def build_cli_session_runtime(
         tasks_dir=tasks_dir,
         traces_dir=traces_dir,
         compaction_dir=compaction_dir,
+        workspace_root=resolved_workspace_root,
+        execution_root=resolved_workspace_root,
         team_dir=team_dir,
         trace_logger=build_trace_logger(
             active_session_id,

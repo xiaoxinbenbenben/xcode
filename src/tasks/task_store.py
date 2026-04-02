@@ -65,6 +65,7 @@ def create_task(
     prompt: str | None = None,
     subagent_type: str | None = None,
     model_route: str | None = None,
+    require_worktree: bool = False,
     owner: str = "main_agent",
     status: str = "pending",
 ) -> dict[str, Any]:
@@ -82,6 +83,7 @@ def create_task(
         "prompt": (prompt or "").strip(),
         "subagent_type": subagent_type,
         "model_route": model_route,
+        "require_worktree": require_worktree,
         "blockedBy": [],
         "blocks": [],
         "lease_expires_at": None,

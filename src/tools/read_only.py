@@ -34,6 +34,12 @@ from src.tools.common import (
 # 这里保留四个职责非常明确的只读工具：
 # LS 看结构，Glob 找路径，Grep 找内容，Read 读文件。
 
+
+def _active_workspace_root(runtime_context: ToolRuntimeContext | None) -> Path:
+    if runtime_context is None:
+        return PROJECT_ROOT
+    return runtime_context.execution_root
+
 def _format_listing_line(entry: dict[str, str]) -> str:
     suffix = "/" if entry["type"] == "dir" else "@"
     if entry["type"] == "file":
@@ -41,10 +47,10 @@ def _format_listing_line(entry: dict[str, str]) -> str:
     return f"{entry['path']}{suffix}"
 
 
-def _make_entry(path: Path) -> dict[str, str]:
+def _make_entry(path: Path, *, workspace_root: Path) -> dict[str, str]:
     entry_type = "link" if path.is_symlink() else ("dir" if path.is_dir() else "file")
     return {
-        "path": normalize_posix(path),
+        "path": normalize_posix(path, workspace_root=workspace_root),
         "type": entry_type,
     }
 
@@ -60,6 +66,7 @@ def _glob_matches(relative_path: str, pattern: str) -> bool:
 def _iter_workspace_files(
     search_root: Path,
     *,
+    workspace_root: Path,
     include_hidden: bool,
     include_ignored: bool,
 ) -> list[Path]:
@@ -72,7 +79,7 @@ def _iter_workspace_files(
                 name
                 for name in dir_names
                 if not should_skip_entry(
-                    relative_posix=normalize_posix(root_path / name),
+                    relative_posix=normalize_posix(root_path / name, workspace_root=workspace_root),
                     include_hidden=include_hidden,
                     include_ignored=include_ignored,
                 )
@@ -83,7 +90,7 @@ def _iter_workspace_files(
         for file_name in sorted(file_names, key=str.casefold):
             file_path = root_path / file_name
             if should_skip_entry(
-                relative_posix=normalize_posix(file_path),
+                relative_posix=normalize_posix(file_path, workspace_root=workspace_root),
                 include_hidden=include_hidden,
                 include_ignored=include_ignored,
             ):
@@ -92,10 +99,10 @@ def _iter_workspace_files(
     return files
 
 
-def _sort_grep_matches(matches: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _sort_grep_matches(matches: list[dict[str, Any]], *, workspace_root: Path) -> list[dict[str, Any]]:
     # 先按 mtime 降序，再按路径和行号稳定排序，尽量保留 legacy 里“最近活跃代码优先”的语义。
     def sort_key(match: dict[str, Any]) -> tuple[float, str, int]:
-        file_path = PROJECT_ROOT / match["file"]
+        file_path = workspace_root / match["file"]
         try:
             mtime = file_path.stat().st_mtime
         except OSError:
@@ -111,6 +118,7 @@ def _grep_with_rg(
     path_resolved: str,
     include: str | None,
     case_sensitive: bool,
+    workspace_root: Path,
 ) -> list[dict[str, Any]]:
     # 优先走 rg，让“按内容找证据”保持足够快；这里只负责执行和解析，不做协议封装。
     command = ["rg", "--line-number", "--no-heading", "--color", "never"]
@@ -122,7 +130,7 @@ def _grep_with_rg(
 
     completed = subprocess.run(
         command,
-        cwd=PROJECT_ROOT,
+        cwd=workspace_root,
         capture_output=True,
         text=True,
         check=False,
@@ -143,7 +151,7 @@ def _grep_with_rg(
                 "text": text_part,
             }
         )
-    return _sort_grep_matches(matches)
+    return _sort_grep_matches(matches, workspace_root=workspace_root)
 
 
 def _grep_with_python(
@@ -152,6 +160,7 @@ def _grep_with_python(
     search_root: Path,
     include: str | None,
     limit: int,
+    workspace_root: Path,
 ) -> tuple[list[dict[str, Any]], bool]:
     # Python 路径只做最小回退实现：保证无 rg 时工具仍可用，但性能和覆盖率可能打折。
     matches: list[dict[str, Any]] = []
@@ -159,10 +168,11 @@ def _grep_with_python(
 
     for file_path in _iter_workspace_files(
         search_root,
+        workspace_root=workspace_root,
         include_hidden=False,
         include_ignored=False,
     ):
-        relative_project_path = normalize_posix(file_path)
+        relative_project_path = normalize_posix(file_path, workspace_root=workspace_root)
         relative_search_path = file_path.relative_to(search_root).as_posix()
         if include and not (
             _glob_matches(relative_project_path, include)
@@ -189,9 +199,9 @@ def _grep_with_python(
                 )
                 if len(matches) > limit:
                     truncated = True
-                    return _sort_grep_matches(matches[:limit]), truncated
+                    return _sort_grep_matches(matches[:limit], workspace_root=workspace_root), truncated
 
-    return _sort_grep_matches(matches), truncated
+    return _sort_grep_matches(matches, workspace_root=workspace_root), truncated
 
 
 def list_files(
@@ -200,6 +210,7 @@ def list_files(
     limit: int = 100,
     include_hidden: bool = False,
     ignore: list[str] | None = None,
+    runtime_context: ToolRuntimeContext | None = None,
 ) -> ToolResponse:
     """列出目录或文件条目，适合先看工作区结构。"""
     start_time = start_timer()
@@ -218,23 +229,23 @@ def list_files(
                 message="offset 或 limit 参数非法。",
                 text="参数错误：offset 必须 >= 0，limit 必须在 1 到 200 之间。",
             )
-
-        workspace_path = resolve_workspace_path(path)
+        workspace_root = _active_workspace_root(runtime_context)
+        workspace_path = resolve_workspace_path(path, workspace_root=workspace_root)
         ensure_exists(workspace_path)
 
         # LS 允许目标本身是文件，这样 agent 在拿到具体路径后也能快速确认它的类型。
         if workspace_path.resolved.is_file():
-            entries = [_make_entry(workspace_path.resolved)]
+            entries = [_make_entry(workspace_path.resolved, workspace_root=workspace_root)]
         elif workspace_path.resolved.is_dir():
             children = sorted(
                 workspace_path.resolved.iterdir(),
                 key=sort_key_for_entry,
             )
             entries = [
-                _make_entry(child)
+                _make_entry(child, workspace_root=workspace_root)
                 for child in children
                 if not should_skip_entry(
-                    relative_posix=normalize_posix(child),
+                    relative_posix=normalize_posix(child, workspace_root=workspace_root),
                     include_hidden=include_hidden,
                     include_ignored=False,
                     ignore_patterns=ignore,
@@ -283,6 +294,7 @@ def glob_search(
     limit: int = 50,
     include_hidden: bool = False,
     include_ignored: bool = False,
+    runtime_context: ToolRuntimeContext | None = None,
 ) -> ToolResponse:
     """按名称或 glob 模式查找文件路径，不读取文件内容。"""
     start_time = start_timer()
@@ -302,7 +314,8 @@ def glob_search(
                 text="参数错误：pattern 不能为空，limit 必须在 1 到 200 之间。",
             )
 
-        workspace_path = resolve_workspace_path(path)
+        workspace_root = _active_workspace_root(runtime_context)
+        workspace_path = resolve_workspace_path(path, workspace_root=workspace_root)
         ensure_exists(workspace_path)
         if not workspace_path.resolved.is_dir():
             raise ToolFailure(
@@ -317,6 +330,7 @@ def glob_search(
 
         for file_path in _iter_workspace_files(
             workspace_path.resolved,
+            workspace_root=workspace_root,
             include_hidden=include_hidden,
             include_ignored=include_ignored,
         ):
@@ -325,7 +339,7 @@ def glob_search(
             relative_search_path = file_path.relative_to(workspace_path.resolved).as_posix()
             if not _glob_matches(relative_search_path, pattern):
                 continue
-            matched_paths.append(normalize_posix(file_path))
+            matched_paths.append(normalize_posix(file_path, workspace_root=workspace_root))
             if len(matched_paths) > limit:
                 truncated = True
                 matched_paths = matched_paths[:limit]
@@ -365,6 +379,7 @@ def grep_search(
     include: str | None = None,
     case_sensitive: bool = False,
     limit: int = 100,
+    runtime_context: ToolRuntimeContext | None = None,
 ) -> ToolResponse:
     """按内容搜索代码，优先用 rg，不可用时回退到 Python。"""
     start_time = start_timer()
@@ -384,7 +399,8 @@ def grep_search(
                 text="参数错误：pattern 不能为空，limit 必须在 1 到 200 之间。",
             )
 
-        workspace_path = resolve_workspace_path(path)
+        workspace_root = _active_workspace_root(runtime_context)
+        workspace_path = resolve_workspace_path(path, workspace_root=workspace_root)
         ensure_exists(workspace_path)
         if not workspace_path.resolved.is_dir():
             raise ToolFailure(
@@ -408,6 +424,7 @@ def grep_search(
                     path_resolved=workspace_path.relative_posix,
                     include=include,
                     case_sensitive=case_sensitive,
+                    workspace_root=workspace_root,
                 )
             except (OSError, RuntimeError, subprocess.SubprocessError):
                 # rg 失败时不直接报错，而是降级到 Python 搜索，并用 partial 暴露“结果打折”。
@@ -418,6 +435,7 @@ def grep_search(
                     search_root=workspace_path.resolved,
                     include=include,
                     limit=limit,
+                    workspace_root=workspace_root,
                 )
         else:
             fallback_used = True
@@ -427,6 +445,7 @@ def grep_search(
                 search_root=workspace_path.resolved,
                 include=include,
                 limit=limit,
+                workspace_root=workspace_root,
             )
 
         if len(matches) > limit:
@@ -541,7 +560,8 @@ def read_file(
                 text="参数错误：path 不能为空，start_line 必须 >= 1，limit 必须在 1 到 2000 之间。",
             )
 
-        workspace_path = resolve_workspace_path(path)
+        workspace_root = _active_workspace_root(runtime_context)
+        workspace_path = resolve_workspace_path(path, workspace_root=workspace_root)
         ensure_exists(workspace_path)
         if workspace_path.resolved.is_dir():
             raise ToolFailure(
@@ -669,6 +689,7 @@ def _ls_tool(
             limit=limit,
             include_hidden=include_hidden,
             ignore=ignore,
+            runtime_context=ctx.context,
         ),
     )
 
@@ -698,6 +719,7 @@ def _glob_tool(
             limit=limit,
             include_hidden=include_hidden,
             include_ignored=include_ignored,
+            runtime_context=ctx.context,
         ),
     )
 
@@ -727,6 +749,7 @@ def _grep_tool(
             include=include,
             case_sensitive=case_sensitive,
             limit=limit,
+            runtime_context=ctx.context,
         ),
     )
 

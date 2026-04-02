@@ -174,8 +174,9 @@ def _validate_timeout(timeout_ms: int) -> int:
     return timeout_ms
 
 
-def _resolve_directory(directory: str):
-    workspace_path = resolve_workspace_path(directory)
+def _resolve_directory(directory: str, *, runtime_context: ToolRuntimeContext | None):
+    workspace_root = runtime_context.execution_root if runtime_context is not None else None
+    workspace_path = resolve_workspace_path(directory, workspace_root=workspace_root)
     ensure_exists(workspace_path)
     if not workspace_path.resolved.is_dir():
         raise ToolFailure(
@@ -243,6 +244,7 @@ def run_bash(
     command: str,
     directory: str = ".",
     timeout_ms: int = DEFAULT_TIMEOUT_MS,
+    runtime_context: ToolRuntimeContext | None = None,
 ) -> ToolResponse:
     """在项目工作区内执行一个最小非交互 shell 命令。"""
     start_time = start_timer()
@@ -255,7 +257,7 @@ def run_bash(
     try:
         normalized_command = _validate_command(command)
         validated_timeout = _validate_timeout(timeout_ms)
-        workspace_directory = _resolve_directory(directory)
+        workspace_directory = _resolve_directory(directory, runtime_context=runtime_context)
     except ToolFailure as failure:
         return error_from_failure(
             failure,
@@ -417,6 +419,7 @@ def _bash_tool(
             command=command,
             directory=directory,
             timeout_ms=timeout_ms,
+            runtime_context=ctx.context,
         ),
     )
 

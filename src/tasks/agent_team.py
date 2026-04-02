@@ -14,6 +14,7 @@ from agents import Agent, Runner
 from src.runtime.session import ToolRuntimeContext
 from src.tasks.task_graph import claim_task as claim_persistent_task, renew_task_lease, update_task
 from src.tasks.task_store import get_task
+from src.tasks.worktrees import ensure_task_worktree
 from src.tools.common import ToolFailure
 from src.tools.read_only import READ_ONLY_TOOLS
 from src.tools.edit_write import FILE_EDIT_TOOLS
@@ -379,6 +380,8 @@ class AgentTeamRuntime:
             tasks_dir=self.base_context.tasks_dir,
             traces_dir=self.base_context.traces_dir,
             compaction_dir=self.base_context.compaction_dir,
+            workspace_root=self.base_context.workspace_root,
+            execution_root=self.base_context.execution_root,
             team_dir=self.base_context.team_dir,
             current_model=self.base_context.current_model,
             main_model=self.base_context.main_model,
@@ -427,6 +430,44 @@ class AgentTeamRuntime:
         self._update_member(
             worker.name,
             current_task_id=task_id,
+        )
+        return task
+
+    def _bind_task_execution_root_for_worker(
+        self,
+        worker: TeammateWorker,
+        *,
+        task: dict[str, object],
+    ) -> dict[str, object]:
+        # phase 4 只做最小 worktree 绑定：
+        # 需要隔离的任务切到 task 专属 worktree，否则回到 session 的 workspace_root。
+        if task.get("require_worktree"):
+            task = ensure_task_worktree(
+                runtime_context=self.base_context,
+                task_id=int(task["id"]),
+            )
+            worktree_path = Path(str(task["worktree_path"]))
+            worker.context.set_execution_root(worktree_path)
+            self._update_member(
+                worker.name,
+                current_worktree=str(task["worktree_name"]),
+            )
+            self._append_transcript_event(
+                worker,
+                _build_transcript_event(
+                    event_type="worktree_bound",
+                    payload={
+                        "task_id": task["id"],
+                        "worktree_name": task["worktree_name"],
+                    },
+                ),
+            )
+            return task
+
+        worker.context.set_execution_root(worker.context.workspace_root)
+        self._update_member(
+            worker.name,
+            current_worktree=None,
         )
         return task
 
@@ -523,6 +564,10 @@ class AgentTeamRuntime:
                 current_task_id = None
             else:
                 self._renew_task_lease_for_worker(worker, task_id=int(claimed_task["id"]))
+                claimed_task = self._bind_task_execution_root_for_worker(
+                    worker,
+                    task=claimed_task,
+                )
                 current_input = _build_task_input(claimed_task)
                 current_task_id = int(claimed_task["id"])
 
@@ -910,6 +955,21 @@ class AgentTeamRuntime:
             }
         )
         return {"name": name, "status": "stopping"}
+
+    def clear_worktree_binding(self, *, worktree_path: str) -> None:
+        # closeout remove 后，把仍指向这个 worktree 的 teammate 状态收回到 workspace_root。
+        target_worktree_path = str(Path(worktree_path).resolve())
+        for worker in self._workers.values():
+            member = self._find_member(worker.name)
+            if member is None:
+                continue
+            if str(member.get("current_worktree") or "") == "":
+                continue
+            current_execution_root = str(worker.context.execution_root)
+            if current_execution_root != target_worktree_path:
+                continue
+            worker.context.set_execution_root(worker.context.workspace_root)
+            self._update_member(worker.name, current_worktree=None)
 
     def close(self) -> None:
         # 关闭 session runtime 时，把当前进程里的 teammate 一并停止，避免泄漏后台线程。

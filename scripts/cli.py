@@ -48,6 +48,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="List saved sessions and exit.",
     )
     parser.add_argument(
+        "--workspace",
+        dest="workspace_root",
+        help="Bind a new session to a specific workspace root.",
+    )
+    parser.add_argument(
         "prompt",
         nargs="?",
         help="User request. If omitted, the CLI will open an interactive prompt.",
@@ -107,17 +112,20 @@ def run_repl(
     *,
     session_id: str | None = None,
     new_session: bool = False,
+    workspace_root: Path | None = None,
 ) -> int:
     session = build_prompt_session()
     try:
         session_runtime = build_cli_session_runtime(
             session_id=session_id,
             new_session=new_session,
+            workspace_root=workspace_root,
         )
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
     print(f"Session: {session_runtime.session_name} ({session_runtime.session_id})")
+    print(f"Workspace: {session_runtime.context.workspace_root}")
     print("Enter 发送 | Esc Enter 换行 | Ctrl-D / Ctrl-C 退出")
 
     try:
@@ -150,6 +158,7 @@ def run_repl(
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    workspace_root = Path(args.workspace_root).expanduser() if args.workspace_root else None
 
     config = load_runtime_config()
     if args.list_sessions:
@@ -158,7 +167,10 @@ def main(argv: list[str] | None = None) -> int:
             print("No saved sessions.")
             return 0
         for session in sessions:
-            print(f"{session.session_id}\t{session.name}\t{session.last_active_at}")
+            print(
+                f"{session.session_id}\t{session.name}\t"
+                f"{session.workspace_root}\t{session.last_active_at}"
+            )
         return 0
 
     if args.prompt is not None:
@@ -166,8 +178,9 @@ def main(argv: list[str] | None = None) -> int:
             session_runtime = build_cli_session_runtime(
                 session_id=args.session_id,
                 new_session=args.new_session,
+                workspace_root=workspace_root,
             )
-        except FileNotFoundError as exc:
+        except (FileNotFoundError, ValueError) as exc:
             print(str(exc), file=sys.stderr)
             return 1
         try:
@@ -188,6 +201,7 @@ def main(argv: list[str] | None = None) -> int:
         config,
         session_id=args.session_id,
         new_session=args.new_session,
+        workspace_root=workspace_root,
     )
 
 

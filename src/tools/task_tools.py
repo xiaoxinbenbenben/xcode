@@ -37,6 +37,7 @@ def task_create(
     prompt: str | None = None,
     subagent_type: str | None = None,
     model_route: str | None = None,
+    require_worktree: bool = False,
     runtime_context: ToolRuntimeContext | None = None,
 ) -> ToolResponse:
     # 任务创建只负责落盘一份最小任务对象，不在这里顺手执行任务。
@@ -48,6 +49,7 @@ def task_create(
         "prompt": prompt,
         "subagent_type": subagent_type,
         "model_route": model_route,
+        "require_worktree": require_worktree,
     }
     try:
         active_runtime_context = _require_runtime_context(runtime_context)
@@ -59,6 +61,7 @@ def task_create(
             prompt=prompt,
             subagent_type=subagent_type,
             model_route=model_route,
+            require_worktree=require_worktree,
         )
         return success_response(
             data={"task": task},
@@ -173,6 +176,8 @@ def task_list(*, runtime_context: ToolRuntimeContext | None = None) -> ToolRespo
                 "title": task["title"],
                 "status": task["status"],
                 "owner": task["owner"],
+                "require_worktree": task.get("require_worktree", False),
+                "worktree_name": task.get("worktree_name"),
                 "blockedBy": task["blockedBy"],
                 "blocks": task["blocks"],
             }
@@ -273,6 +278,7 @@ async def task_run(
                 prompt=prompt,
                 subagent_type=subagent_type,
                 model_route=model_route,
+                require_worktree=False,
             )
             active_task_id = int(task["id"])
 

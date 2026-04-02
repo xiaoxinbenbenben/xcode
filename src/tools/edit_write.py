@@ -119,7 +119,15 @@ def edit_file(
                 text="参数错误：path 和 old_string 不能为空。",
             )
 
-        workspace_path = _ensure_existing_text_file(path)
+        workspace_root = runtime_context.execution_root if runtime_context is not None else None
+        workspace_path = resolve_workspace_path(path, workspace_root=workspace_root)
+        ensure_exists(workspace_path)
+        if workspace_path.resolved.is_dir():
+            raise ToolFailure(
+                code="IS_DIRECTORY",
+                message=f"路径 '{workspace_path.relative_posix}' 是目录。",
+                text=f"'{workspace_path.relative_posix}' 是目录，不能直接编辑或写入。",
+            )
         path_resolved = workspace_path.relative_posix
         expected_mtime_ms, expected_size_bytes = _resolve_expected_lock(
             workspace_path,
@@ -234,7 +242,8 @@ def write_file(
                 text="参数错误：path 不能为空。",
             )
 
-        workspace_path = resolve_workspace_path(path)
+        workspace_root = runtime_context.execution_root if runtime_context is not None else None
+        workspace_path = resolve_workspace_path(path, workspace_root=workspace_root)
         path_resolved = workspace_path.relative_posix
         target_exists = workspace_path.resolved.exists()
         if target_exists and workspace_path.resolved.is_dir():

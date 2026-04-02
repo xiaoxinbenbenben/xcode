@@ -15,7 +15,8 @@ from src.protocol import ToolResponse, error_response
 # 这层只放所有本地工具共享的基础能力：
 # 工作区边界、统一上下文、统一错误封装、最小统计信息。
 
-# 当前阶段所有工具都固定以项目根目录为边界，不支持独立 working_dir。
+# 当前阶段 PROJECT_ROOT 仍然是 agent 自己代码所在的仓库根。
+# phase 4 开始，具体工具执行目录会通过 workspace_root / execution_root 覆盖。
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_TOOL_OUTPUT_MAX_LINES = 200
 DEFAULT_TOOL_OUTPUT_MAX_BYTES = 12_288
@@ -201,16 +202,17 @@ async def run_traced_tool_async(
     return result
 
 
-def resolve_workspace_path(path: str) -> WorkspacePath:
+def resolve_workspace_path(path: str, *, workspace_root: Path | None = None) -> WorkspacePath:
     raw_path = path or "."
+    active_root = (workspace_root or PROJECT_ROOT).resolve()
     candidate = Path(raw_path)
     if not candidate.is_absolute():
-        candidate = PROJECT_ROOT / candidate
+        candidate = active_root / candidate
 
     # 统一在这里做一次真实路径归一化和工作区边界校验，避免每个工具各写一套。
     resolved = candidate.resolve(strict=False)
     try:
-        relative = resolved.relative_to(PROJECT_ROOT)
+        relative = resolved.relative_to(active_root)
     except ValueError as exc:
         raise ToolFailure(
             code="ACCESS_DENIED",
@@ -270,9 +272,10 @@ def sort_key_for_entry(path: Path) -> tuple[int, str]:
     return (0 if is_dir else 1, path.name.casefold())
 
 
-def normalize_posix(path: Path) -> str:
-    # 返回给 agent 的路径统一用相对项目根目录的 POSIX 字符串，避免平台差异污染协议。
-    relative = path.relative_to(PROJECT_ROOT)
+def normalize_posix(path: Path, *, workspace_root: Path | None = None) -> str:
+    # 返回给 agent 的路径统一用相对当前执行根目录的 POSIX 字符串，避免平台差异污染协议。
+    active_root = (workspace_root or PROJECT_ROOT).resolve()
+    relative = path.relative_to(active_root)
     return "." if str(relative) == "." else relative.as_posix()
 
 

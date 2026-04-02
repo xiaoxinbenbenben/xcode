@@ -8,6 +8,7 @@ from src.tools.skill_tool import SKILL_TOOLS
 from src.tools.task_tools import TASK_TOOLS
 from src.tools.team_tools import TEAM_TOOLS
 from src.tools.todo_write import TODO_TOOLS
+from src.tools.worktree_tools import WORKTREE_TOOLS
 
 AGENT_TOOLS = [
     *READ_ONLY_TOOLS,
@@ -16,6 +17,7 @@ AGENT_TOOLS = [
     *BASH_TOOLS,
     *COMPACTION_TOOLS,
     *TASK_TOOLS,
+    *WORKTREE_TOOLS,
     *SKILL_TOOLS,
     *TEAM_TOOLS,
 ]
@@ -27,6 +29,7 @@ __all__ = [
     "BASH_TOOLS",
     "COMPACTION_TOOLS",
     "TASK_TOOLS",
+    "WORKTREE_TOOLS",
     "SKILL_TOOLS",
     "TEAM_TOOLS",
     "AGENT_TOOLS",
