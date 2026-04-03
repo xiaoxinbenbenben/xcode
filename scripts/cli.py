@@ -11,12 +11,12 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-HISTORY_PATH = PROJECT_ROOT / "artifacts" / "prompt_history.txt"
+AGENT_CODE_ROOT = Path(__file__).resolve().parent.parent
+HISTORY_PATH = AGENT_CODE_ROOT / "artifacts" / "prompt_history.txt"
 
 # 保持 `python scripts/cli.py ...` 这种最直接入口可用，不要求先安装成包。
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+if str(AGENT_CODE_ROOT) not in sys.path:
+    sys.path.insert(0, str(AGENT_CODE_ROOT))
 
 from src.runtime.config import load_runtime_config
 from src.runtime.config import RuntimeConfig

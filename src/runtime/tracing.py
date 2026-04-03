@@ -10,7 +10,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+from src.runtime.paths import display_path, get_default_workspace_root
+
 DEFAULT_TRACE_DIR = "artifacts/traces"
 HTML_RESULT_DATA_PREVIEW_CHARS = 300
 _BOOL_TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -46,7 +47,7 @@ def load_trace_config() -> TraceConfig:
     trace_dir_raw = os.environ.get("TRACE_DIR", DEFAULT_TRACE_DIR).strip() or DEFAULT_TRACE_DIR
     trace_dir = Path(trace_dir_raw)
     if not trace_dir.is_absolute():
-        trace_dir = PROJECT_ROOT / trace_dir
+        trace_dir = get_default_workspace_root() / trace_dir
     return TraceConfig(
         enabled=_read_bool_env("TRACE_ENABLED", True),
         trace_dir=trace_dir.resolve(),
@@ -134,17 +135,17 @@ class LocalTraceLogger:
 
     @property
     def trace_path(self) -> str:
-        try:
-            return str(self._trace_path.relative_to(PROJECT_ROOT))
-        except ValueError:
-            return str(self._trace_path)
+        return display_path(
+            self._trace_path,
+            get_default_workspace_root(),
+        )
 
     @property
     def html_path(self) -> str:
-        try:
-            return str(self._html_path.relative_to(PROJECT_ROOT))
-        except ValueError:
-            return str(self._html_path)
+        return display_path(
+            self._html_path,
+            get_default_workspace_root(),
+        )
 
     def _next_step(self, run_id: str | None) -> int:
         if run_id is None:

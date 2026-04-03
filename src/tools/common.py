@@ -11,13 +11,11 @@ from typing import Any
 from uuid import uuid4
 
 from src.protocol import ToolResponse, error_response
+from src.runtime.paths import display_path, get_default_workspace_root
 
 # 这层只放所有本地工具共享的基础能力：
 # 工作区边界、统一上下文、统一错误封装、最小统计信息。
 
-# 当前阶段 PROJECT_ROOT 仍然是 agent 自己代码所在的仓库根。
-# phase 4 开始，具体工具执行目录会通过 workspace_root / execution_root 覆盖。
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_TOOL_OUTPUT_MAX_LINES = 200
 DEFAULT_TOOL_OUTPUT_MAX_BYTES = 12_288
 DEFAULT_TOOL_OUTPUT_DIR = "artifacts/tool-output"
@@ -115,7 +113,7 @@ def build_context(
     path_resolved: str | None = None,
     **extra: Any,
 ) -> dict[str, Any]:
-    # 大多数工具当前仍固定在项目根目录运行；像 Bash 这类显式支持 directory 的工具可以覆盖 cwd。
+    # cwd 字段描述的是这次调用真正使用的执行根，不再默认绑定 agent 自己仓库。
     context: dict[str, Any] = {
         "cwd": cwd,
         "params_input": params_input,
@@ -204,7 +202,7 @@ async def run_traced_tool_async(
 
 def resolve_workspace_path(path: str, *, workspace_root: Path | None = None) -> WorkspacePath:
     raw_path = path or "."
-    active_root = (workspace_root or PROJECT_ROOT).resolve()
+    active_root = (workspace_root or get_default_workspace_root()).resolve()
     candidate = Path(raw_path)
     if not candidate.is_absolute():
         candidate = active_root / candidate
@@ -274,7 +272,7 @@ def sort_key_for_entry(path: Path) -> tuple[int, str]:
 
 def normalize_posix(path: Path, *, workspace_root: Path | None = None) -> str:
     # 返回给 agent 的路径统一用相对当前执行根目录的 POSIX 字符串，避免平台差异污染协议。
-    active_root = (workspace_root or PROJECT_ROOT).resolve()
+    active_root = (workspace_root or get_default_workspace_root()).resolve()
     relative = path.relative_to(active_root)
     return "." if str(relative) == "." else relative.as_posix()
 
@@ -320,12 +318,27 @@ def build_output_preview(text: str, *, max_lines: int, max_bytes: int) -> str:
     return encoded[:max_bytes].decode("utf-8", errors="ignore")
 
 
-def get_tool_output_dir() -> WorkspacePath:
+def get_tool_output_dir(
+    *,
+    runtime_context: Any | None = None,
+    workspace_root: Path | None = None,
+) -> Path:
     configured_dir = os.environ.get("TOOL_OUTPUT_DIR", DEFAULT_TOOL_OUTPUT_DIR)
-    return resolve_workspace_path(configured_dir)
+    candidate = Path(configured_dir)
+    if candidate.is_absolute():
+        return candidate.resolve()
+    if runtime_context is not None:
+        return (runtime_context.session_dir / candidate).resolve()
+    return ((workspace_root or get_default_workspace_root()) / candidate).resolve()
 
 
-def maybe_truncate_output_text(*, tool_name: str, full_output: str) -> OutputTruncation | None:
+def maybe_truncate_output_text(
+    *,
+    tool_name: str,
+    full_output: str,
+    runtime_context: Any | None = None,
+    workspace_root: Path | None = None,
+) -> OutputTruncation | None:
     # 这层统一负责“大输出治理”：
     # 判阈值、生成预览、落盘完整输出，并把回查路径返回给工具层。
     if not full_output:
@@ -342,15 +355,18 @@ def maybe_truncate_output_text(*, tool_name: str, full_output: str) -> OutputTru
         max_lines=limits.max_lines,
         max_bytes=limits.max_bytes,
     )
-    output_dir = get_tool_output_dir()
-    output_dir.resolved.mkdir(parents=True, exist_ok=True)
+    output_dir = get_tool_output_dir(
+        runtime_context=runtime_context,
+        workspace_root=workspace_root,
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     # 文件名只保留最小可读信息，真正的语义还是由相对路径和工具名共同表达。
     safe_tool_name = re.sub(r"[^A-Za-z0-9_-]+", "-", tool_name).strip("-") or "tool"
     filename = (
         f"tool_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_{safe_tool_name}_{uuid4().hex[:8]}.txt"
     )
-    output_path = output_dir.resolved / filename
+    output_path = output_dir / filename
     output_path.write_text(full_output, encoding="utf-8")
 
     return OutputTruncation(
@@ -361,7 +377,7 @@ def maybe_truncate_output_text(*, tool_name: str, full_output: str) -> OutputTru
         kept_lines=count_text_lines(preview_text),
         kept_bytes=len(preview_text.encode("utf-8")),
         preview_text=preview_text,
-        full_output_path=normalize_posix(output_path),
+        full_output_path=display_path(output_path, workspace_root or get_default_workspace_root()),
     )
 
 

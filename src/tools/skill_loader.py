@@ -5,9 +5,10 @@ import re
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from typing import Iterable
 from warnings import warn
 
-from src.tools.common import PROJECT_ROOT
+from src.runtime.paths import AGENT_CODE_ROOT, get_default_workspace_root
 
 SKILL_NAME_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
@@ -54,20 +55,32 @@ def _expand_skill_arguments(body: str, args: str) -> str:
     return f"{body.rstrip()}\n\nARGUMENTS:\n{normalized_args}\n"
 
 
+def _normalize_skills_roots(skills_root: Path | Iterable[Path] | None) -> tuple[Path, ...]:
+    if skills_root is None:
+        return ((get_default_workspace_root() / "skills").resolve(),)
+    if isinstance(skills_root, Path):
+        return (skills_root.resolve(),)
+    return tuple(path.resolve() for path in skills_root)
+
+
 class SkillLoader:
-    def __init__(self, skills_root: Path | None = None) -> None:
-        self.skills_root = skills_root or PROJECT_ROOT / "skills"
+    def __init__(self, skills_root: Path | Iterable[Path] | None = None) -> None:
+        self.skills_roots = _normalize_skills_roots(skills_root)
         self._skills: dict[str, SkillMeta] = {}
         self._last_scan_marker = -1.0
 
     def _compute_scan_marker(self) -> float:
-        # mtime 刷新只需要一个最小正确性：目录或任意 skill 文件变化时重新扫描。
-        if not self.skills_root.exists():
+        # mtime 刷新只需要一个最小正确性：任一技能根目录或 skill 文件变化时重新扫描。
+        if not any(root.exists() for root in self.skills_roots):
             return 0.0
 
-        marker = self.skills_root.stat().st_mtime
-        for path in self.skills_root.rglob("SKILL.md"):
-            marker = max(marker, path.stat().st_mtime)
+        marker = 0.0
+        for skills_root in self.skills_roots:
+            if not skills_root.exists():
+                continue
+            marker = max(marker, skills_root.stat().st_mtime)
+            for path in skills_root.rglob("SKILL.md"):
+                marker = max(marker, path.stat().st_mtime)
         return marker
 
     def _should_refresh_on_call(self) -> bool:
@@ -91,41 +104,47 @@ class SkillLoader:
 
     def scan(self) -> list[SkillMeta]:
         skills: dict[str, SkillMeta] = {}
-        if not self.skills_root.exists():
+        if not any(root.exists() for root in self.skills_roots):
             self._skills = {}
             self._last_scan_marker = 0.0
             return []
 
-        # legacy 文档要求支持 skills/**/SKILL.md，所以这里递归扫描。
-        for skill_path in sorted(self.skills_root.rglob("SKILL.md")):
-            parsed = _parse_frontmatter(skill_path.read_text(encoding="utf-8"))
-            if parsed is None:
-                warn(f"跳过非法 skill 文件：{skill_path}")
+        # roots 按优先级从低到高扫描，后者覆盖前者：
+        # builtin < workspace < execution(worktree)。
+        for skills_root in self.skills_roots:
+            if not skills_root.exists():
                 continue
 
-            metadata, body = parsed
-            name = metadata.get("name", "").strip()
-            description = metadata.get("description", "").strip()
-            if not SKILL_NAME_PATTERN.fullmatch(name) or not description:
-                warn(f"跳过非法 skill 元信息：{skill_path}")
-                continue
+            # legacy 文档要求支持 skills/**/SKILL.md，所以这里递归扫描。
+            for skill_path in sorted(skills_root.rglob("SKILL.md")):
+                parsed = _parse_frontmatter(skill_path.read_text(encoding="utf-8"))
+                if parsed is None:
+                    warn(f"跳过非法 skill 文件：{skill_path}")
+                    continue
 
-            if skill_path.is_relative_to(PROJECT_ROOT):
-                relative_path = skill_path.relative_to(PROJECT_ROOT)
-            else:
-                relative_path = Path("skills") / skill_path.parent.relative_to(self.skills_root) / "SKILL.md"
-            base_dir = relative_path.parent.as_posix()
-            if name in skills:
-                # duplicate name 先按 legacy 要求保留后发现的版本，同时给开发期一个最小提醒。
-                warn(f"发现重复 skill 名称，保留后者：{name}")
-            skills[name] = SkillMeta(
-                name=name,
-                description=description,
-                path=relative_path.as_posix(),
-                base_dir=base_dir,
-                body=body,
-                mtime=skill_path.stat().st_mtime,
-            )
+                metadata, body = parsed
+                name = metadata.get("name", "").strip()
+                description = metadata.get("description", "").strip()
+                if not SKILL_NAME_PATTERN.fullmatch(name) or not description:
+                    warn(f"跳过非法 skill 元信息：{skill_path}")
+                    continue
+
+                relative_path = (
+                    Path("skills")
+                    / skill_path.parent.relative_to(skills_root)
+                    / "SKILL.md"
+                )
+                base_dir = relative_path.parent.as_posix()
+                if name in skills:
+                    warn(f"发现重复 skill 名称，保留后者：{name}")
+                skills[name] = SkillMeta(
+                    name=name,
+                    description=description,
+                    path=relative_path.as_posix(),
+                    base_dir=base_dir,
+                    body=body,
+                    mtime=skill_path.stat().st_mtime,
+                )
 
         self._skills = skills
         self._last_scan_marker = self._compute_scan_marker()
@@ -166,7 +185,27 @@ def read_skills_prompt_char_budget() -> int:
     return value
 
 
-@lru_cache(maxsize=1)
-def get_default_skill_loader() -> SkillLoader:
-    # Skill loader 和 L1 技能目录应该共享同一份索引视图，避免两套缓存状态。
-    return SkillLoader(PROJECT_ROOT / "skills")
+@lru_cache(maxsize=16)
+def get_default_skill_loader(
+    *,
+    workspace_root: Path | None = None,
+    execution_root: Path | None = None,
+) -> SkillLoader:
+    # 默认索引同时包含内置 skills 与当前工作区 skills，
+    # 并允许 worktree 里的 skills 覆盖工作区和内置技能。
+    active_workspace_root = (workspace_root or get_default_workspace_root()).resolve()
+    active_execution_root = (execution_root or active_workspace_root).resolve()
+
+    ordered_roots = [
+        (AGENT_CODE_ROOT / "skills").resolve(),
+        (active_workspace_root / "skills").resolve(),
+        (active_execution_root / "skills").resolve(),
+    ]
+    deduped_roots: list[Path] = []
+    seen: set[Path] = set()
+    for root in ordered_roots:
+        if root in seen:
+            continue
+        seen.add(root)
+        deduped_roots.append(root)
+    return SkillLoader(deduped_roots)

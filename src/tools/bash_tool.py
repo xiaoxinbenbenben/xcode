@@ -4,6 +4,7 @@ import os
 import re
 import shlex
 import subprocess
+from pathlib import Path
 from typing import Any
 
 from agents import RunContextWrapper, function_tool
@@ -212,11 +213,15 @@ def _apply_bash_output_truncation(
     *,
     data: dict[str, Any],
     text: str,
+    runtime_context: ToolRuntimeContext | None,
+    workspace_root: Path | None,
 ) -> tuple[dict[str, Any], str, bool]:
     # Bash 最容易产生超长 stdout/stderr，所以在最终封装前统一过一层共享截断机制。
     output_truncation = maybe_truncate_output_text(
         tool_name="Bash",
         full_output=text,
+        runtime_context=runtime_context,
+        workspace_root=workspace_root,
     )
     if output_truncation is None:
         return data, text, False
@@ -330,6 +335,8 @@ def run_bash(
         data, text, _output_truncated = _apply_bash_output_truncation(
             data=data,
             text=text,
+            runtime_context=runtime_context,
+            workspace_root=workspace_directory.resolved,
         )
         return partial_response(
             data=data,
@@ -381,6 +388,8 @@ def run_bash(
     data, text, output_truncated = _apply_bash_output_truncation(
         data=data,
         text=text,
+        runtime_context=runtime_context,
+        workspace_root=workspace_directory.resolved,
     )
     response_builder = (
         success_response

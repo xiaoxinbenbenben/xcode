@@ -83,6 +83,10 @@ def _skill_tool(
         invoke=lambda: load_skill_content(
             name=name,
             args=args,
+            loader=get_default_skill_loader(
+                workspace_root=ctx.context.workspace_root,
+                execution_root=ctx.context.execution_root,
+            ),
         ),
     )
 

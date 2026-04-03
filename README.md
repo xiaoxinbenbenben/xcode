@@ -7,6 +7,7 @@
 - CLI 与 React + Ink TUI（MVP）
 - 可恢复、可命名、可选择的 session
 - 新 session 绑定任意项目目录：`--workspace <path>`
+- 未显式传 `--workspace` 时，新 session 默认绑定当前 shell 工作目录
 - 结构化 runtime events
 - 本地 tracing：`artifacts/traces/*.jsonl` + `artifacts/traces/*.html`
 - 分层上下文：L1 / L2 / L3
@@ -120,14 +121,20 @@ Esc 后按 Enter 换行
 
 ## 当前语义
 
+- 根目录模型：
+  - `AGENT_CODE_ROOT`：agent 自己源码、内置资源、内置 skills
+  - `workspace_root`：当前 session 服务的用户项目根
+  - `execution_root`：当前工具实际执行目录；默认等于 `workspace_root`，绑定 worktree 后可切换
+  - `session_root / session_dir`：session、task、trace、team、background 等内部持久化目录
 - L1：最小 system prompt + 当前已实现工具规则
-- L2：仓库本地规则文件 `code_law.md`
+- L2：从 `workspace_root` 读取仓库本地规则文件 `code_law.md`
 - L3：session 历史 + summary
-- `@file`：只插入 reminder，不直接注入文件全文
+- `@file`：按 `execution_root` 解析，只插入 reminder，不直接注入文件全文
 - 长会话：先 `micro_compact`，超阈值再 `auto_compact`
-- 工具大输出：只保留预览，完整内容写入 `artifacts/`
+- Skills：默认查找顺序是 `execution_root/skills` -> `workspace_root/skills` -> `AGENT_CODE_ROOT/skills`
+- 工具大输出：只保留预览；完整输出落到 session 内部目录或当前工作区配置目录，并通过 `full_output_path` 回查
 - 工具输出一旦是 `partial` / `truncated`，模型应按元信息继续回查完整内容
-- tracing：本地写入 JSONL 与 HTML 审计页，不依赖 SDK 官方 tracing
+- tracing：本地写入 JSONL 与 HTML 审计页，不依赖 SDK 官方 tracing；session 运行时默认写到 session 目录下的 `traces/`
 - runtime：Python 侧统一产出结构化事件，CLI/TUI 消费同一条事件流
 - tool lifecycle：UI 默认展示工具摘要，不默认展开完整 `tool_result`
 - TUI：通过 Python CLI 的 JSONL 事件桥驱动，而不是直接嵌入模型调用
@@ -153,5 +160,5 @@ uv run python scripts/cli.py --help
 - 还没有多 workspace 的列表、切换和路由；当前是一条 session 绑定一个 workspace
 - tool lifecycle 还没有 tool 内部 stdout/stderr 级别的细粒度事件
 - TUI 还是 MVP，还没有 session 选择、detail 展开和更完整的输入编辑能力
-- `agent_code_root` 和 `workspace_root` 还没有彻底拆开
+- 已区分 `AGENT_CODE_ROOT`、`workspace_root`、`execution_root`；内置资源与用户工作区不再共用同一个默认根
 - AgentTeam 的 JSONL 文件邮箱、独立 session、独立进程还没做

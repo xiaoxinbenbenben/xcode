@@ -11,4 +11,5 @@ artifacts/compaction/
 artifacts/traces/
 artifacts/prompt_history.txt
 artifacts/todos/
+artifacts/sessions/
 tui/node_modules/

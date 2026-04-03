@@ -9,10 +9,10 @@ from typing import Any
 
 from agents import RunContextWrapper, function_tool
 
+from src.runtime.paths import get_default_workspace_root
 from src.runtime.session import ToolRuntimeContext
 from src.protocol import ToolResponse, partial_response, success_response
 from src.tools.common import (
-    PROJECT_ROOT,
     ToolFailure,
     build_output_truncation_notice,
     build_context,
@@ -37,8 +37,9 @@ from src.tools.common import (
 
 def _active_workspace_root(runtime_context: ToolRuntimeContext | None) -> Path:
     if runtime_context is None:
-        return PROJECT_ROOT
+        return get_default_workspace_root()
     return runtime_context.execution_root
+
 
 def _format_listing_line(entry: dict[str, str]) -> str:
     suffix = "/" if entry["type"] == "dir" else "@"
@@ -461,6 +462,8 @@ def grep_search(
         output_truncation = maybe_truncate_output_text(
             tool_name="Grep",
             full_output=rendered_matches,
+            runtime_context=runtime_context,
+            workspace_root=workspace_root,
         )
         if output_truncation is not None:
             preview_limit = max(1, get_tool_output_limits().max_lines)
@@ -608,6 +611,8 @@ def read_file(
         output_truncation = maybe_truncate_output_text(
             tool_name="Read",
             full_output=content,
+            runtime_context=runtime_context,
+            workspace_root=workspace_root,
         )
         if output_truncation is not None:
             data["content"] = output_truncation.preview_text

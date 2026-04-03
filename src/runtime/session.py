@@ -13,15 +13,15 @@ from uuid import uuid4
 from agents import SQLiteSession
 
 from src.context.compaction import HistorySummary
+from src.runtime.paths import AGENT_CODE_ROOT, get_default_workspace_root
 from src.runtime.tracing import LocalTraceLogger, build_trace_logger
 
 if TYPE_CHECKING:
     from src.tasks.agent_team import AgentTeamRuntime
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_SESSION_ROOT = PROJECT_ROOT / "artifacts" / "sessions"
+DEFAULT_SESSION_ROOT = AGENT_CODE_ROOT / "artifacts" / "sessions"
 DEFAULT_MAX_READ_SNAPSHOTS = 256
-DEFAULT_TODO_PERSIST_DIR = PROJECT_ROOT / "artifacts" / "todos"
+DEFAULT_TODO_PERSIST_DIR = AGENT_CODE_ROOT / "artifacts" / "todos"
 _WHITESPACE_RE = re.compile(r"\s+")
 _FILE_MENTION_RE = re.compile(r"@\S+")
 
@@ -46,6 +46,10 @@ def _build_session_name_from_user_input(user_input: str) -> str | None:
 
 def _default_session_root() -> Path:
     return DEFAULT_SESSION_ROOT
+
+
+def _default_workspace_root() -> Path:
+    return get_default_workspace_root()
 
 
 def _session_pointer_path(session_root: Path) -> Path:
@@ -108,8 +112,8 @@ class ToolRuntimeContext:
     compaction_dir: Path = field(default_factory=lambda: _default_session_root() / "detached-session" / "compaction")
     # workspace_root 表示这次会话服务哪个仓库根目录。
     # execution_root 表示当前工具默认在哪个目录执行；phase 4 会把它切到 worktree。
-    workspace_root: Path = field(default_factory=lambda: PROJECT_ROOT)
-    execution_root: Path = field(default_factory=lambda: PROJECT_ROOT)
+    workspace_root: Path = field(default_factory=_default_workspace_root)
+    execution_root: Path = field(default_factory=_default_workspace_root)
     # team_dir 和 actor_name 是 AgentTeam phase 1 新加的最小协作状态。
     # lead 和 teammate 共享一套 session 目录，但通过 actor_name 区分发送者身份。
     team_dir: Path = field(default_factory=lambda: _default_session_root() / "detached-session" / "team")
@@ -334,7 +338,7 @@ def _load_session_meta(meta_path: Path, *, session_id: str) -> SessionMeta:
         return SessionMeta(
             session_id=session_id,
             name=_build_default_session_name(),
-            workspace_root=str(PROJECT_ROOT.resolve()),
+            workspace_root=str(_default_workspace_root()),
             created_at=now,
             last_active_at=now,
             default_name=True,
@@ -344,7 +348,7 @@ def _load_session_meta(meta_path: Path, *, session_id: str) -> SessionMeta:
     return SessionMeta(
         session_id=str(raw.get("session_id") or session_id),
         name=str(raw.get("name") or _build_default_session_name()),
-        workspace_root=str(raw.get("workspace_root") or PROJECT_ROOT.resolve()),
+        workspace_root=str(raw.get("workspace_root") or _default_workspace_root()),
         created_at=str(raw.get("created_at") or _utc_now()),
         last_active_at=str(raw.get("last_active_at") or _utc_now()),
         default_name=bool(raw.get("default_name", False)),
@@ -435,7 +439,7 @@ def build_cli_session_runtime(
     meta_path = session_dir / "session_meta.json"
     meta = _load_session_meta(meta_path, session_id=active_session_id)
     if new_session:
-        resolved_workspace_root = (workspace_root or PROJECT_ROOT).resolve()
+        resolved_workspace_root = (workspace_root or _default_workspace_root()).resolve()
         meta.workspace_root = str(resolved_workspace_root)
     else:
         resolved_workspace_root = Path(meta.workspace_root).resolve()

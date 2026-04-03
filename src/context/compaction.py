@@ -12,7 +12,8 @@ import tiktoken
 from agents import Agent, Runner, SQLiteSession, TResponseInputItem
 from pydantic import BaseModel, Field
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+from src.runtime.paths import display_path, get_default_workspace_root
+
 DEFAULT_CONTEXT_COMPACT_TRIGGER_TOKENS = 12_000
 DEFAULT_CONTEXT_COMPACT_MIN_MESSAGES = 8
 DEFAULT_CONTEXT_COMPACT_KEEP_RECENT_ITEMS = 12
@@ -145,7 +146,7 @@ def get_context_compaction_config() -> ContextCompactionConfig:
             "CONTEXT_COMPACT_KEEP_RECENT_ITEMS",
             DEFAULT_CONTEXT_COMPACT_KEEP_RECENT_ITEMS,
         ),
-        archive_dir=(PROJECT_ROOT / archive_dir).resolve(),
+        archive_dir=((get_default_workspace_root() / archive_dir).resolve()),
         micro=MicroCompactConfig(
             min_tool_results_before_compact=_read_positive_int_env(
                 "CONTEXT_MICRO_COMPACT_MIN_TOOL_RESULTS",
@@ -376,10 +377,7 @@ def _archive_history_items(
         json.dumps([_item_to_dict(item) for item in history_items], ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    try:
-        return str(archive_path.relative_to(PROJECT_ROOT))
-    except ValueError:
-        return str(archive_path)
+    return display_path(archive_path, get_default_workspace_root())
 
 
 async def compact_session_history(

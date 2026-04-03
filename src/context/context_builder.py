@@ -13,13 +13,13 @@ from src.context.compaction import (
     prepare_history_for_model,
 )
 from src.context.file_mentions import preprocess_user_input
+from src.runtime.paths import get_default_workspace_root
 from src.tools.skill_loader import SkillLoader, get_default_skill_loader, read_skills_prompt_char_budget
 
 if TYPE_CHECKING:
     from src.runtime.session import CliSessionRuntime
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-CODE_LAW_PATH = PROJECT_ROOT / "code_law.md"
+CODE_LAW_FILENAME = "code_law.md"
 
 # 主 system prompt 现在拆成稳定段落，避免后续继续把所有语义糊成一小段自由文本。
 ROOT_IDENTITY_PROMPT = """
@@ -259,7 +259,11 @@ def _build_root_system_prompt() -> str:
     return "\n\n".join(ROOT_SYSTEM_PROMPT_SECTIONS)
 
 
-def _build_grouped_tool_rules(tool_names: list[str]) -> str:
+def _build_grouped_tool_rules(
+    tool_names: list[str],
+    *,
+    skill_loader: SkillLoader | None = None,
+) -> str:
     # 工具规则先按能力组输出，再落到单工具规则，避免后续继续增长成平铺长清单。
     lines: list[str] = []
     enabled_tools = set(tool_names)
@@ -279,22 +283,30 @@ def _build_grouped_tool_rules(tool_names: list[str]) -> str:
         lines.append("")
 
     if "Skill" in enabled_tools:
-        skill_catalog = _build_skill_catalog_text(get_default_skill_loader())
+        skill_catalog = _build_skill_catalog_text(skill_loader or get_default_skill_loader())
         if skill_catalog:
             lines.append(skill_catalog)
 
     return "\n".join(lines).strip()
 
 
-def build_stable_context_layer(tool_names: list[str]) -> StableContextLayer:
+def build_stable_context_layer(
+    tool_names: list[str],
+    *,
+    skill_loader: SkillLoader | None = None,
+) -> StableContextLayer:
     # 这里仍然只覆盖真实已落地工具，但主 prompt 与工具规则都升级成结构化版本。
     return StableContextLayer(
         system_prompt=_build_root_system_prompt(),
-        tool_rules=_build_grouped_tool_rules(tool_names),
+        tool_rules=_build_grouped_tool_rules(
+            tool_names,
+            skill_loader=skill_loader,
+        ),
     )
 
 
-def build_repo_rule_layer(path: Path = CODE_LAW_PATH) -> RepoRuleLayer:
+def build_repo_rule_layer(*, workspace_root: Path | None = None) -> RepoRuleLayer:
+    path = (workspace_root or get_default_workspace_root()).resolve() / CODE_LAW_FILENAME
     if not path.exists():
         return RepoRuleLayer(path=None, content="")
     return RepoRuleLayer(
@@ -349,9 +361,33 @@ async def build_context_bundle(
 ) -> ContextBundle:
     # 这里统一组装当前轮真正送给模型的 L1/L2/L3。
     # AgentTeam、background result、compaction 都在这一层汇合。
-    stable_layer = build_stable_context_layer(tool_names)
-    repo_rule_layer = build_repo_rule_layer()
-    preprocessed_input = preprocess_user_input(user_input)
+    active_workspace_root = (
+        session_runtime.context.workspace_root
+        if session_runtime is not None
+        else get_default_workspace_root()
+    )
+    active_execution_root = (
+        session_runtime.context.execution_root
+        if session_runtime is not None
+        else active_workspace_root
+    )
+    skill_loader = (
+        get_default_skill_loader(
+            workspace_root=active_workspace_root,
+            execution_root=active_execution_root,
+        )
+        if "Skill" in tool_names
+        else None
+    )
+    stable_layer = build_stable_context_layer(
+        tool_names,
+        skill_loader=skill_loader,
+    )
+    repo_rule_layer = build_repo_rule_layer(workspace_root=active_workspace_root)
+    preprocessed_input = preprocess_user_input(
+        user_input,
+        workspace_root=active_execution_root,
+    )
     current_turn_items = list(preprocessed_input.current_turn_items)
     history_items: list[TResponseInputItem] = []
     summary: HistorySummary | None = None

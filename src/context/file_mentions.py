@@ -6,7 +6,8 @@ from pathlib import Path
 
 from agents import TResponseInputItem
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+from src.runtime.paths import get_default_workspace_root
+
 MAX_FILE_MENTIONS = 5
 FILE_MENTION_PATTERN = re.compile(r"(?<![A-Za-z0-9])@([a-zA-Z0-9/._-]+(?:\.[a-zA-Z0-9]+)?)")
 
@@ -18,15 +19,16 @@ class FileMentionPreprocessResult:
     mentioned_files: list[str]
 
 
-def _resolve_existing_workspace_file(raw_path: str) -> str | None:
+def _resolve_existing_workspace_file(raw_path: str, *, workspace_root: Path | None = None) -> str | None:
     # 当前只接受项目内相对路径，并且只提醒真实存在的文件。
+    active_root = (workspace_root or get_default_workspace_root()).resolve()
     candidate = Path(raw_path)
     if candidate.is_absolute():
         return None
 
-    resolved = (PROJECT_ROOT / candidate).resolve(strict=False)
+    resolved = (active_root / candidate).resolve(strict=False)
     try:
-        relative = resolved.relative_to(PROJECT_ROOT)
+        relative = resolved.relative_to(active_root)
     except ValueError:
         return None
     if not resolved.exists() or not resolved.is_file():
@@ -34,12 +36,20 @@ def _resolve_existing_workspace_file(raw_path: str) -> str | None:
     return relative.as_posix()
 
 
-def extract_file_mentions(user_input: str, *, max_mentions: int = MAX_FILE_MENTIONS) -> tuple[list[str], int]:
+def extract_file_mentions(
+    user_input: str,
+    *,
+    max_mentions: int = MAX_FILE_MENTIONS,
+    workspace_root: Path | None = None,
+) -> tuple[list[str], int]:
     # 这里按出现顺序去重，再在最后统一做数量上限，避免重复路径反复污染 reminder。
     seen: set[str] = set()
     ordered_mentions: list[str] = []
     for match in FILE_MENTION_PATTERN.finditer(user_input):
-        resolved = _resolve_existing_workspace_file(match.group(1))
+        resolved = _resolve_existing_workspace_file(
+            match.group(1),
+            workspace_root=workspace_root,
+        )
         if resolved is None or resolved in seen:
             continue
         seen.add(resolved)
@@ -65,9 +75,16 @@ def build_file_mention_reminder(mentioned_files: list[str], *, omitted_count: in
     return "\n".join(lines)
 
 
-def preprocess_user_input(user_input: str) -> FileMentionPreprocessResult:
+def preprocess_user_input(
+    user_input: str,
+    *,
+    workspace_root: Path | None = None,
+) -> FileMentionPreprocessResult:
     # 用户原文保持不变；系统只是在前面额外插入一个最小 reminder item。
-    mentioned_files, omitted_count = extract_file_mentions(user_input)
+    mentioned_files, omitted_count = extract_file_mentions(
+        user_input,
+        workspace_root=workspace_root,
+    )
     current_turn_items: list[TResponseInputItem] = []
     if mentioned_files:
         current_turn_items.append(

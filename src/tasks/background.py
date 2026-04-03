@@ -5,11 +5,10 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from src.runtime.paths import display_path
 from src.runtime.session import ToolRuntimeContext
 from src.tasks.task_graph import update_task
 from src.tasks.task_store import create_task, list_tasks
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _background_output_path(runtime_context: ToolRuntimeContext, task_id: int) -> Path:
@@ -20,12 +19,12 @@ def _background_output_path(runtime_context: ToolRuntimeContext, task_id: int) -
 
 def _display_artifact_path(runtime_context: ToolRuntimeContext, path: Path) -> str:
     # 会话目录可能在项目外的临时根目录里，路径显示优先相对 session_root，再回退绝对路径。
-    for base in (PROJECT_ROOT, runtime_context.session_root):
-        try:
-            return str(path.relative_to(base))
-        except ValueError:
-            continue
-    return str(path)
+    return display_path(
+        path,
+        runtime_context.session_dir,
+        runtime_context.session_root,
+        runtime_context.workspace_root,
+    )
 
 
 def _summarize_background_result(*, command: str, exit_code: int) -> str:
@@ -39,7 +38,7 @@ def _execute(runtime_context: ToolRuntimeContext, task_id: int, command: str) ->
     result = subprocess.run(
         command,
         shell=True,
-        cwd=PROJECT_ROOT,
+        cwd=runtime_context.execution_root.resolve(),
         capture_output=True,
         text=True,
     )
