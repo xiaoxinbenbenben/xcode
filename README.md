@@ -9,6 +9,9 @@
 - 最小 CLI 交互与流式输出
 - 可恢复、可选择的 session 多轮记忆
 - 分层上下文构造
+- 事件驱动 runtime：统一结构化事件流
+- 工具生命周期事件：tool intent / start / result / finish
+- React + Ink TUI（MVP）
 - 本地 tracing：JSONL + HTML 审计页
 - 统一工具协议
 - 只读工具、编辑工具、Todo 工具、最小 Bash 工具
@@ -23,6 +26,22 @@
 ## 当前已经实现的能力
 
 - 最小 CLI 入口与流式输出
+- 结构化 runtime events：
+  - `run_started`
+  - `context_built`
+  - `assistant_text_delta`
+  - `assistant_text_completed`
+  - `tool_intent`
+  - `tool_started`
+  - `tool_result`
+  - `tool_finished`
+  - `background_result_arrived`
+  - `team_message_arrived`
+  - `teammate_state_changed`
+  - `run_finished`
+  - `run_failed`
+- 最小工具生命周期事件流
+- React + Ink 状态化 TUI（MVP）
 - 可恢复、可命名、可选择的 session
 - 新 session 可绑定任意 `workspace_root`
 - 最小上下文分层与拼装
@@ -89,6 +108,13 @@ uv sync
 uv run python scripts/cli.py
 ```
 
+启动 TUI：
+
+```bash
+cd tui
+npm run dev
+```
+
 列出已有 session：
 
 ```bash
@@ -107,16 +133,38 @@ uv run python scripts/cli.py --new-session
 uv run python scripts/cli.py --new-session --workspace /path/to/project
 ```
 
+启动一个绑定指定项目目录的新 TUI session：
+
+```bash
+cd tui
+npm run dev -- --workspace /path/to/project
+```
+
 恢复指定 session：
 
 ```bash
 uv run python scripts/cli.py --session <session_id>
 ```
 
+在 TUI 中恢复指定 session：
+
+```bash
+cd tui
+npm run dev -- --session <session_id>
+```
+
 或单次调用：
 
 ```bash
 uv run python scripts/cli.py "列出当前项目根目录结构"
+```
+
+TUI 输入规则：
+
+```text
+Enter 发送
+Esc 后按 Enter 换行
+/quit 或 Ctrl+C 退出
 ```
 
 ## 当前上下文工程语义
@@ -128,6 +176,9 @@ uv run python scripts/cli.py "列出当前项目根目录结构"
 - 长会话：先 `micro_compact`，超阈值再 `auto_compact`
 - 工具大输出：只保留预览，完整内容写入 `artifacts/`
 - tracing：本地写入 JSONL 与 HTML 审计页，不依赖 SDK 官方 tracing
+- runtime：Python 侧统一产出结构化事件，CLI/TUI 消费同一条事件流
+- tool lifecycle：UI 默认展示工具摘要，不默认展开完整 `tool_result`
+- TUI：通过 Python CLI 的 JSONL 事件桥驱动，而不是直接嵌入模型调用
 - task graph：独立持久化到 session 目录，不受 `micro_compact` 影响
 - AgentTeam：teammate 消息会以 `<team-messages>` 注入 lead 的下一轮 L3
 - AgentTeam phase 3：teammate 在没有显式消息时可从 task board 认领可执行任务
@@ -155,11 +206,14 @@ uv run python scripts/cli.py --help
   - 当前已经支持“新 session 绑定任意项目目录”
   - 但还没有多 workspace 的列表、选择、切换和路由
 - 事件驱动运行时（event-driven runtime）
-  - 当前 runtime 仍然以“流式文本回调 + 直接打印”为主，不是统一的结构化事件流
+  - 已有最小结构化事件流
+  - 但还没有独立事件总线、跨进程汇总或更细粒度的执行层事件
 - 工具生命周期事件流（tool lifecycle stream）
-  - 当前流式层主要消费文本增量，还没有把 tool intent、tool start、tool finish、tool result 做成一等流事件暴露给 UI
+  - 已暴露 `tool_intent / tool_started / tool_result / tool_finished`
+  - 但还没有 tool 内部 stdout/stderr 级别的细粒度流式事件
 - 状态化 TUI / REPL
-  - 当前还是 `prompt_toolkit` CLI，不是基于 React + Ink 的事件驱动 TUI
+  - 已有基于 React + Ink 的最小事件驱动 TUI
+  - 但还没有完整的多面板、session 选择、detail 展开和更成熟的输入编辑能力
 - `workspace_root` 与 `agent_code_root` 解耦
   - 当前已经区分 `workspace_root` 与 `execution_root`
   - 但 `agent_code_root` 和 `workspace_root` 还没有彻底拆开

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -78,6 +78,9 @@ class RuntimeContextLayer:
     mentioned_files: list[str]
     summary: HistorySummary | None
     compaction: dict[str, str | int | bool | None]
+    background_results: list[dict[str, object]] = field(default_factory=list)
+    team_messages: list[dict[str, object]] = field(default_factory=list)
+    teammate_state_changes: list[dict[str, object]] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,6 +218,9 @@ async def build_context_bundle(
     current_turn_items = list(preprocessed_input.current_turn_items)
     history_items: list[TResponseInputItem] = []
     summary: HistorySummary | None = None
+    background_results: list[dict[str, object]] = []
+    team_messages: list[dict[str, object]] = []
+    teammate_state_changes: list[dict[str, object]] = []
     compaction: dict[str, str | int | bool | None] = {
         "token_estimator": "tiktoken",
         "estimated_tokens": 0,
@@ -229,15 +235,16 @@ async def build_context_bundle(
         # 两者都属于“上一轮之外发生的系统事件”，不直接改写原始 session history。
         if session_runtime.context.team_runtime is not None:
             team_messages = session_runtime.context.team_runtime.drain_lead_messages()
+            teammate_state_changes = session_runtime.context.team_runtime.drain_teammate_state_changes()
             if team_messages:
                 current_turn_items = [
                     _build_team_messages_item(team_messages),
                     *current_turn_items,
                 ]
-        notifications = session_runtime.context.drain_background_notifications()
-        if notifications:
+        background_results = session_runtime.context.drain_background_notifications()
+        if background_results:
             current_turn_items = [
-                _build_background_results_item(notifications),
+                _build_background_results_item(background_results),
                 *current_turn_items,
             ]
         # compaction 仍然只治理普通历史项，不碰 team/task 这些外部持久化状态。
@@ -278,5 +285,8 @@ async def build_context_bundle(
             mentioned_files=preprocessed_input.mentioned_files,
             summary=summary,
             compaction=compaction,
+            background_results=background_results,
+            team_messages=team_messages,
+            teammate_state_changes=teammate_state_changes,
         ),
     )

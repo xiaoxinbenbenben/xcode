@@ -27,6 +27,31 @@ from src.tools.common import (
 # 参数整理、统一协议包装、trace 记录。
 
 
+def _public_member_view(member: dict[str, object]) -> dict[str, object]:
+    # transcript_path 是 session 内部调试产物路径。
+    # 在 workspace 模式下它并不一定可被 Read 直接访问，所以不暴露给模型。
+    return {
+        key: value
+        for key, value in member.items()
+        if key != "transcript_path"
+    }
+
+
+def _public_team_view(result: dict[str, object]) -> dict[str, object]:
+    # List / Spawn 都统一走这层裁剪，避免模型把内部调试字段当成工作区文件路径。
+    data = dict(result)
+    member = data.get("member")
+    if isinstance(member, dict):
+        data["member"] = _public_member_view(member)
+    members = data.get("members")
+    if isinstance(members, list):
+        data["members"] = [
+            _public_member_view(item) if isinstance(item, dict) else item
+            for item in members
+        ]
+    return data
+
+
 def _spawn_teammate(
     *,
     name: str,
@@ -54,9 +79,10 @@ def _spawn_teammate(
             role=role,
             prompt=prompt,
         )
+        public_result = _public_team_view(result)
         member = result["member"]
         return success_response(
-            data=result,
+            data=public_result,
             text=f"已创建 teammate '{member['name']}'，当前状态：{member['status']}",
             stats=build_stats(start_time),
             context=build_context(
@@ -86,8 +112,9 @@ def _list_teammates(*, runtime_context: ToolRuntimeContext | None = None) -> Too
                 text="当前没有可用会话，暂时无法查看 teammate 列表。",
             )
         result = list_teammates(runtime_context)
+        public_result = _public_team_view(result)
         return success_response(
-            data=result,
+            data=public_result,
             text=f"当前共有 {len(result['members'])} 个 teammate。",
             stats=build_stats(start_time, total=len(result["members"])),
             context=build_context(

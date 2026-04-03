@@ -231,6 +231,7 @@ class AgentTeamRuntime:
         self.transcripts_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._lead_queue: queue.Queue[dict[str, object]] = queue.Queue()
+        self._lead_state_queue: queue.Queue[dict[str, object]] = queue.Queue()
         self._workers: dict[str, TeammateWorker] = {}
         self._state = self._load_or_create_state()
         self._request_tracker = self._load_or_create_request_tracker()
@@ -289,9 +290,26 @@ class AgentTeamRuntime:
                     message=f"未找到 teammate: {name}",
                     text=f"未找到 teammate '{name}'。",
                 )
+            previous_status = member.get("status")
+            previous_task_id = member.get("current_task_id")
+            previous_worktree = member.get("current_worktree")
             member.update(updates)
             self._state["updated_at"] = _utc_now()
             self._save_state(self._state)
+            if (
+                member.get("status") != previous_status
+                or member.get("current_task_id") != previous_task_id
+                or member.get("current_worktree") != previous_worktree
+            ):
+                self._lead_state_queue.put(
+                    {
+                        "name": name,
+                        "previous_status": previous_status,
+                        "status": member.get("status"),
+                        "current_task_id": member.get("current_task_id"),
+                        "current_worktree": member.get("current_worktree"),
+                    }
+                )
             return dict(member)
 
     def _append_transcript_event(self, worker: TeammateWorker, event: dict[str, object]) -> None:
@@ -928,6 +946,16 @@ class AgentTeamRuntime:
             except queue.Empty:
                 break
         return messages
+
+    def drain_teammate_state_changes(self) -> list[dict[str, object]]:
+        # teammate 状态变化只给 lead 的 UI/runtime 看，不回注入模型正文。
+        changes: list[dict[str, object]] = []
+        while True:
+            try:
+                changes.append(self._lead_state_queue.get_nowait())
+            except queue.Empty:
+                break
+        return changes
 
     def stop_teammate(self, *, name: str) -> dict[str, object]:
         # stop 只是发出关闭请求，不阻塞等待完整清理结束。
