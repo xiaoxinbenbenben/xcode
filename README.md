@@ -12,6 +12,7 @@
 - 本地 tracing：`artifacts/traces/*.jsonl` + `artifacts/traces/*.html`
 - 分层上下文：L1 / L2 / L3
 - 结构化主 system prompt 与分组工具提示词
+- workspace-scoped 长期记忆（MVP）
 - `@file` 输入预处理与 system reminder
 - 长会话治理：`micro_compact`、`auto_compact`、`Compact`
 - 工具输出统一截断、落盘与回查
@@ -38,6 +39,8 @@ src/
 scripts/     # CLI 入口
 tests/       # 单元测试
 artifacts/   # 本地产物目录
+~/.xx-coding/
+  projects/<project-key>/memory/   # workspace-scoped 长期记忆目录
 ```
 
 ## 运行
@@ -127,11 +130,18 @@ Esc 后按 Enter 换行
   - `execution_root`：当前工具实际执行目录；默认等于 `workspace_root`，绑定 worktree 后可切换
   - `session_root / session_dir`：session、task、trace、team、background 等内部持久化目录
 - L1：最小 system prompt + 当前已实现工具规则
-- L2：从 `workspace_root` 读取仓库本地规则文件 `code_law.md`
+- L2：从 `workspace_root` 读取仓库本地规则文件 `code_law.md`，并注入当前 workspace 的长期记忆索引
 - L3：session 历史 + summary
 - `@file`：按 `execution_root` 解析，只插入 reminder，不直接注入文件全文
 - 长会话：先 `micro_compact`，超阈值再 `auto_compact`
 - Skills：默认查找顺序是 `execution_root/skills` -> `workspace_root/skills` -> `AGENT_CODE_ROOT/skills`
+- 长期记忆：
+  - 目录：`~/.xx-coding/projects/<project-key>/memory/`
+  - `project-key`：优先由 canonical git identity 派生；拿不到 git 身份时回退到 `workspace_root`
+  - `MEMORY.md`：索引文件，默认只把它的截断预览注入 prompt
+  - topic 文件：每条长期记忆一个 `.md`，frontmatter 至少包含 `name`、`description`、`type`、`updated_at`
+  - 类型：`user`、`feedback`、`project`、`reference`
+  - 访问边界：`Read/Edit/Write` 允许访问当前 workspace 对应的 memory dir，但不会放开任意 home 路径
 - 工具大输出：只保留预览；完整输出落到 session 内部目录或当前工作区配置目录，并通过 `full_output_path` 回查
 - 工具输出一旦是 `partial` / `truncated`，模型应按元信息继续回查完整内容
 - tracing：本地写入 JSONL 与 HTML 审计页，不依赖 SDK 官方 tracing；session 运行时默认写到 session 目录下的 `traces/`

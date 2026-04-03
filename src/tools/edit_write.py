@@ -14,6 +14,7 @@ from src.tools.common import (
     ensure_exists,
     error_from_failure,
     get_file_snapshot,
+    get_workspace_memory_allow_roots,
     read_workspace_text_file,
     require_existing_file_lock,
     resolve_workspace_path,
@@ -23,6 +24,13 @@ from src.tools.common import (
 
 # 这里先只放两类最小写入工具：
 # Edit 负责已有文件上的单点替换，Write 负责全量创建或覆盖。
+
+
+def _memory_allow_roots(runtime_context: ToolRuntimeContext | None) -> tuple[Path, ...]:
+    # 长期记忆目录绑定 workspace_root，不能跟着 execution_root 的 worktree 切换而漂移。
+    if runtime_context is None:
+        return get_workspace_memory_allow_roots()
+    return get_workspace_memory_allow_roots(workspace_root=runtime_context.workspace_root)
 
 
 def _ensure_existing_text_file(path: str) -> WorkspacePath:
@@ -120,7 +128,11 @@ def edit_file(
             )
 
         workspace_root = runtime_context.execution_root if runtime_context is not None else None
-        workspace_path = resolve_workspace_path(path, workspace_root=workspace_root)
+        workspace_path = resolve_workspace_path(
+            path,
+            workspace_root=workspace_root,
+            allow_roots=_memory_allow_roots(runtime_context),
+        )
         ensure_exists(workspace_path)
         if workspace_path.resolved.is_dir():
             raise ToolFailure(
@@ -243,7 +255,11 @@ def write_file(
             )
 
         workspace_root = runtime_context.execution_root if runtime_context is not None else None
-        workspace_path = resolve_workspace_path(path, workspace_root=workspace_root)
+        workspace_path = resolve_workspace_path(
+            path,
+            workspace_root=workspace_root,
+            allow_roots=_memory_allow_roots(runtime_context),
+        )
         path_resolved = workspace_path.relative_posix
         target_exists = workspace_path.resolved.exists()
         if target_exists and workspace_path.resolved.is_dir():

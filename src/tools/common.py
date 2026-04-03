@@ -11,7 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 from src.protocol import ToolResponse, error_response
-from src.runtime.paths import display_path, get_default_workspace_root
+from src.runtime.paths import display_path, get_default_workspace_root, get_workspace_memory_dir
 
 # 这层只放所有本地工具共享的基础能力：
 # 工作区边界、统一上下文、统一错误封装、最小统计信息。
@@ -124,6 +124,22 @@ def build_context(
     return context
 
 
+def get_workspace_memory_allow_roots(*, workspace_root: Path | None = None) -> tuple[Path, ...]:
+    # 长期记忆目录是唯一允许跳出 execution_root 的文件访问 carve-out。
+    return (get_workspace_memory_dir(workspace_root=workspace_root),)
+
+
+def _match_allowed_root(path: Path, *, roots: tuple[Path, ...]) -> Path | None:
+    resolved_path = path.resolve(strict=False)
+    for root in roots:
+        try:
+            resolved_path.relative_to(root.resolve())
+            return root.resolve()
+        except ValueError:
+            continue
+    return None
+
+
 def error_from_failure(
     failure: ToolFailure,
     *,
@@ -200,25 +216,37 @@ async def run_traced_tool_async(
     return result
 
 
-def resolve_workspace_path(path: str, *, workspace_root: Path | None = None) -> WorkspacePath:
+def resolve_workspace_path(
+    path: str,
+    *,
+    workspace_root: Path | None = None,
+    allow_roots: tuple[Path, ...] = (),
+) -> WorkspacePath:
     raw_path = path or "."
     active_root = (workspace_root or get_default_workspace_root()).resolve()
     candidate = Path(raw_path)
     if not candidate.is_absolute():
         candidate = active_root / candidate
 
-    # 统一在这里做一次真实路径归一化和工作区边界校验，避免每个工具各写一套。
+    # 统一在这里做一次真实路径归一化和边界校验，避免每个工具各写一套。
     resolved = candidate.resolve(strict=False)
-    try:
-        relative = resolved.relative_to(active_root)
-    except ValueError as exc:
+    matched_root = _match_allowed_root(
+        resolved,
+        roots=(active_root, *allow_roots),
+    )
+    if matched_root is None:
         raise ToolFailure(
             code="ACCESS_DENIED",
             message=f"路径 '{raw_path}' 超出项目工作区。",
-            text="访问被拒绝：路径必须位于当前项目工作区内。",
-        ) from exc
+            text="访问被拒绝：路径必须位于当前执行根目录，或当前 workspace 对应的长期记忆目录内。",
+        )
 
-    relative_posix = "." if str(relative) == "." else relative.as_posix()
+    # 工作区内继续返回相对路径；memory dir 这类外部 allowlist 路径则直接返回绝对路径，避免歧义。
+    try:
+        relative = resolved.relative_to(active_root)
+        relative_posix = "." if str(relative) == "." else relative.as_posix()
+    except ValueError:
+        relative_posix = resolved.as_posix()
     return WorkspacePath(resolved=resolved, relative_posix=relative_posix)
 
 
@@ -271,9 +299,13 @@ def sort_key_for_entry(path: Path) -> tuple[int, str]:
 
 
 def normalize_posix(path: Path, *, workspace_root: Path | None = None) -> str:
-    # 返回给 agent 的路径统一用相对当前执行根目录的 POSIX 字符串，避免平台差异污染协议。
+    # 返回给 agent 的路径优先相对当前执行根目录；不在根内时回退绝对路径，供 memory dir 等 carve-out 使用。
     active_root = (workspace_root or get_default_workspace_root()).resolve()
-    relative = path.relative_to(active_root)
+    resolved_path = path.resolve(strict=False)
+    try:
+        relative = resolved_path.relative_to(active_root)
+    except ValueError:
+        return resolved_path.as_posix()
     return "." if str(relative) == "." else relative.as_posix()
 
 

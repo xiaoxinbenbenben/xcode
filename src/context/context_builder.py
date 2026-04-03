@@ -13,13 +13,19 @@ from src.context.compaction import (
     prepare_history_for_model,
 )
 from src.context.file_mentions import preprocess_user_input
-from src.runtime.paths import get_default_workspace_root
+from src.runtime.paths import (
+    get_default_workspace_root,
+    get_workspace_memory_dir,
+    get_workspace_memory_index_path,
+)
 from src.tools.skill_loader import SkillLoader, get_default_skill_loader, read_skills_prompt_char_budget
 
 if TYPE_CHECKING:
     from src.runtime.session import CliSessionRuntime
 
 CODE_LAW_FILENAME = "code_law.md"
+LONG_TERM_MEMORY_PREVIEW_CHAR_BUDGET = 2_000
+LONG_TERM_MEMORY_PREVIEW_LINE_BUDGET = 80
 
 # 主 system prompt 现在拆成稳定段落，避免后续继续把所有语义糊成一小段自由文本。
 ROOT_IDENTITY_PROMPT = """
@@ -67,6 +73,19 @@ Context Rules
 - System reminders must be followed. This includes @file reminders, <background-results>, and <team-messages>.
 """.strip()
 
+ROOT_LONG_TERM_MEMORY_PROMPT = """
+Long-Term Memory
+- Long-term memory is workspace-scoped L2 context for stable facts that should survive across sessions.
+- Use long-term memory for stable user preferences, durable feedback, long-term collaboration preferences, stable project conventions, and durable reference notes.
+- If the user explicitly says "remember this", you must write or update long-term memory.
+- If the user explicitly says "forget this", "forget", or says not to remember something, you must delete or update the corresponding long-term memory.
+- Before writing long-term memory, read MEMORY.md first, deduplicate against existing entries, and prefer updating an existing topic file over creating a duplicate.
+- MEMORY.md is an index. Topic files hold the details and must include frontmatter with name, description, type, and updated_at.
+- Valid long-term memory types are user, feedback, project, and reference.
+- When you create, rename, update, or delete a topic file, keep MEMORY.md synchronized in the same save operation.
+- Do not write current tasks, temporary plans, transient debugging notes, or current code facts into long-term memory.
+""".strip()
+
 ROOT_COMMUNICATION_STYLE_PROMPT = """
 Communication Style
 - Be concise, direct, and factual.
@@ -89,6 +108,7 @@ ROOT_SYSTEM_PROMPT_SECTIONS = [
     ROOT_CAPABILITY_ROUTING_PROMPT,
     ROOT_STATE_SOURCES_PROMPT,
     ROOT_CONTEXT_RULES_PROMPT,
+    ROOT_LONG_TERM_MEMORY_PROMPT,
     ROOT_COMMUNICATION_STYLE_PROMPT,
     ROOT_HARD_BOUNDARIES_PROMPT,
 ]
@@ -185,6 +205,16 @@ class RepoRuleLayer:
 
 
 @dataclass(frozen=True, slots=True)
+class LongTermMemoryLayer:
+    # 长期记忆仍属于 L2，但单独成层，避免继续把它和 code_law.md 混成同一种来源。
+    memory_dir: Path
+    index_path: Path
+    content: str
+    available: bool
+    truncated: bool
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeContextLayer:
     # L3 分开保存“已有历史”和“本轮输入”，避免在 builder 内部把它们混成一大段字符串。
     history_items: list[TResponseInputItem]
@@ -201,6 +231,7 @@ class RuntimeContextLayer:
 class ContextBundle:
     stable: StableContextLayer
     repo_rule: RepoRuleLayer
+    long_term_memory: LongTermMemoryLayer
     runtime: RuntimeContextLayer
 
     def build_agent_instructions(self) -> str:
@@ -224,6 +255,14 @@ class ContextBundle:
                     "</repository-rules>",
                 ]
             )
+        sections.extend(
+            [
+                "",
+                "<long-term-memory>",
+                _render_long_term_memory_section(self.long_term_memory),
+                "</long-term-memory>",
+            ]
+        )
         return "\n".join(sections).strip()
 
     def build_runner_input(self) -> list[TResponseInputItem]:
@@ -315,6 +354,73 @@ def build_repo_rule_layer(*, workspace_root: Path | None = None) -> RepoRuleLaye
     )
 
 
+def _truncate_long_term_memory_preview(content: str) -> tuple[str, bool]:
+    # MEMORY.md 只注入索引预览，不让长期记忆层反过来吞掉 prompt 预算。
+    preview_lines = content.splitlines()[:LONG_TERM_MEMORY_PREVIEW_LINE_BUDGET]
+    preview = "\n".join(preview_lines).strip()
+    truncated = len(preview_lines) < len(content.splitlines())
+    if len(preview) > LONG_TERM_MEMORY_PREVIEW_CHAR_BUDGET:
+        preview = preview[:LONG_TERM_MEMORY_PREVIEW_CHAR_BUDGET].rstrip()
+        truncated = True
+    if truncated and preview:
+        preview = f"{preview}\n..."
+    return preview, truncated
+
+
+def build_long_term_memory_layer(*, workspace_root: Path | None = None) -> LongTermMemoryLayer:
+    # memory dir 绑定 workspace identity，而不是 execution_root；这样 worktree 切换不会拆散长期记忆。
+    memory_dir = get_workspace_memory_dir(workspace_root=workspace_root)
+    index_path = get_workspace_memory_index_path(workspace_root=workspace_root)
+    if not index_path.exists():
+        return LongTermMemoryLayer(
+            memory_dir=memory_dir,
+            index_path=index_path,
+            content="",
+            available=False,
+            truncated=False,
+        )
+
+    raw_content = index_path.read_text(encoding="utf-8").strip()
+    preview, truncated = _truncate_long_term_memory_preview(raw_content)
+    return LongTermMemoryLayer(
+        memory_dir=memory_dir,
+        index_path=index_path,
+        content=preview,
+        available=True,
+        truncated=truncated,
+    )
+
+
+def _render_long_term_memory_section(layer: LongTermMemoryLayer) -> str:
+    # 这里把“路径、格式、当前索引预览”一次讲清，后续模型才能直接复用 Read/Edit/Write 维护记忆。
+    lines = [
+        f"Workspace long-term memory directory: {layer.memory_dir}",
+        f"Memory index path: {layer.index_path}",
+        "- MEMORY.md is an index. Topic files hold the details.",
+        "- Topic files must use frontmatter fields: name, description, type, updated_at.",
+        "- Valid memory types: user, feedback, project, reference.",
+        "- Only a truncated preview of MEMORY.md is injected here by default.",
+        "- If you create, rename, update, or delete a topic file, synchronize MEMORY.md in the same save operation.",
+    ]
+    if not layer.available:
+        lines.append("No long-term memory has been recorded yet.")
+        return "\n".join(lines)
+    if not layer.content:
+        lines.append("MEMORY.md exists but is currently empty.")
+        return "\n".join(lines)
+
+    preview_label = "MEMORY.md preview"
+    if layer.truncated:
+        preview_label += " (truncated to fit the prompt budget)"
+    lines.extend(
+        [
+            f"{preview_label}:",
+            layer.content,
+        ]
+    )
+    return "\n".join(lines)
+
+
 def _build_background_results_item(notifications: list[dict[str, object]]) -> TResponseInputItem:
     # 后台结果只回注入简短摘要，完整日志仍留在任务图或产物文件里回查。
     lines = ["<background-results>"]
@@ -384,6 +490,7 @@ async def build_context_bundle(
         skill_loader=skill_loader,
     )
     repo_rule_layer = build_repo_rule_layer(workspace_root=active_workspace_root)
+    long_term_memory_layer = build_long_term_memory_layer(workspace_root=active_workspace_root)
     preprocessed_input = preprocess_user_input(
         user_input,
         workspace_root=active_execution_root,
@@ -429,7 +536,13 @@ async def build_context_bundle(
             session=session_runtime.session,
             session_id=session_runtime.session_id,
             model=model_name,
-            stable_text=stable_layer.system_prompt + "\n" + stable_layer.tool_rules,
+            stable_text=(
+                stable_layer.system_prompt
+                + "\n"
+                + stable_layer.tool_rules
+                + "\n"
+                + _render_long_term_memory_section(long_term_memory_layer)
+            ),
             repo_rule_text=repo_rule_layer.content,
             current_turn_items=current_turn_items,
             existing_summary=session_runtime.context.history_summary,
@@ -452,6 +565,7 @@ async def build_context_bundle(
     return ContextBundle(
         stable=stable_layer,
         repo_rule=repo_rule_layer,
+        long_term_memory=long_term_memory_layer,
         runtime=RuntimeContextLayer(
             history_items=history_items,
             current_turn_items=current_turn_items,

@@ -20,6 +20,7 @@ from src.tools.common import (
     ensure_exists,
     error_from_failure,
     get_file_snapshot,
+    get_workspace_memory_allow_roots,
     get_tool_output_limits,
     maybe_truncate_output_text,
     normalize_posix,
@@ -39,6 +40,13 @@ def _active_workspace_root(runtime_context: ToolRuntimeContext | None) -> Path:
     if runtime_context is None:
         return get_default_workspace_root()
     return runtime_context.execution_root
+
+
+def _memory_allow_roots(runtime_context: ToolRuntimeContext | None) -> tuple[Path, ...]:
+    # memory dir 绑定的是 session 的 workspace_root，而不是可能切到 worktree 的 execution_root。
+    if runtime_context is None:
+        return get_workspace_memory_allow_roots()
+    return get_workspace_memory_allow_roots(workspace_root=runtime_context.workspace_root)
 
 
 def _format_listing_line(entry: dict[str, str]) -> str:
@@ -231,7 +239,11 @@ def list_files(
                 text="参数错误：offset 必须 >= 0，limit 必须在 1 到 200 之间。",
             )
         workspace_root = _active_workspace_root(runtime_context)
-        workspace_path = resolve_workspace_path(path, workspace_root=workspace_root)
+        workspace_path = resolve_workspace_path(
+            path,
+            workspace_root=workspace_root,
+            allow_roots=_memory_allow_roots(runtime_context),
+        )
         ensure_exists(workspace_path)
 
         # LS 允许目标本身是文件，这样 agent 在拿到具体路径后也能快速确认它的类型。
@@ -316,7 +328,11 @@ def glob_search(
             )
 
         workspace_root = _active_workspace_root(runtime_context)
-        workspace_path = resolve_workspace_path(path, workspace_root=workspace_root)
+        workspace_path = resolve_workspace_path(
+            path,
+            workspace_root=workspace_root,
+            allow_roots=_memory_allow_roots(runtime_context),
+        )
         ensure_exists(workspace_path)
         if not workspace_path.resolved.is_dir():
             raise ToolFailure(
@@ -401,7 +417,11 @@ def grep_search(
             )
 
         workspace_root = _active_workspace_root(runtime_context)
-        workspace_path = resolve_workspace_path(path, workspace_root=workspace_root)
+        workspace_path = resolve_workspace_path(
+            path,
+            workspace_root=workspace_root,
+            allow_roots=_memory_allow_roots(runtime_context),
+        )
         ensure_exists(workspace_path)
         if not workspace_path.resolved.is_dir():
             raise ToolFailure(
@@ -564,7 +584,11 @@ def read_file(
             )
 
         workspace_root = _active_workspace_root(runtime_context)
-        workspace_path = resolve_workspace_path(path, workspace_root=workspace_root)
+        workspace_path = resolve_workspace_path(
+            path,
+            workspace_root=workspace_root,
+            allow_roots=_memory_allow_roots(runtime_context),
+        )
         ensure_exists(workspace_path)
         if workspace_path.resolved.is_dir():
             raise ToolFailure(
