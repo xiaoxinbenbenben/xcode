@@ -7,20 +7,7 @@
 - CLI 与 React + Ink TUI（MVP）
 - 可恢复、可命名、可选择的 session
 - 新 session 绑定任意项目目录：`--workspace <path>`
-- 结构化 runtime events：
-  - `run_started`
-  - `context_built`
-  - `assistant_text_delta`
-  - `assistant_text_completed`
-  - `tool_intent`
-  - `tool_started`
-  - `tool_result`
-  - `tool_finished`
-  - `background_result_arrived`
-  - `team_message_arrived`
-  - `teammate_state_changed`
-  - `run_finished`
-  - `run_failed`
+- 结构化 runtime events
 - 本地 tracing：`artifacts/traces/*.jsonl` + `artifacts/traces/*.html`
 - 分层上下文：L1 / L2 / L3
 - 结构化主 system prompt 与分组工具提示词
@@ -36,14 +23,7 @@
 - 一次性分析子代理：`TaskRun`
 - 后台命令执行：`BackgroundRun`
 - Skills：`SkillLoader` + `Skill`
-- AgentTeam phase 1/2/3/4：
-  - `SpawnTeammate`
-  - `ListTeammates`
-  - `SendMessage`
-  - `ShutdownRequest`
-  - `PlanApproval`
-  - teammate task claim
-  - task worktree 绑定与 `execution_root`
+- AgentTeam
 
 ## 目录结构
 
@@ -174,5 +154,4 @@ uv run python scripts/cli.py --help
 - tool lifecycle 还没有 tool 内部 stdout/stderr 级别的细粒度事件
 - TUI 还是 MVP，还没有 session 选择、detail 展开和更完整的输入编辑能力
 - `agent_code_root` 和 `workspace_root` 还没有彻底拆开
-- 官方 tracing 还没接
 - AgentTeam 的 JSONL 文件邮箱、独立 session、独立进程还没做
