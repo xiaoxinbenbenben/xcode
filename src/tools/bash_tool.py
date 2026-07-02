@@ -67,6 +67,7 @@ ENV_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
 
 
 def _normalize_output(value: str | bytes | None) -> str:
+    """规范化output，供 Bash 工具 流程复用。"""
     if value is None:
         return ""
     if isinstance(value, bytes):
@@ -77,6 +78,7 @@ def _normalize_output(value: str | bytes | None) -> str:
 def _extract_command_words(command: str) -> list[str]:
     # 这里只做“最小可解释”的 shell 词法扫描：
     # 识别每个命令段的实际命令词，用于阻止明显不该放进 Bash 的命令。
+    """提取command words，供 Bash 工具 流程复用。"""
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()")
         lexer.whitespace_split = True
@@ -106,6 +108,7 @@ def _extract_command_words(command: str) -> list[str]:
 
 
 def _validate_command(command: str) -> str:
+    """校验command，供 Bash 工具 流程复用。"""
     if not isinstance(command, str) or not command.strip():
         raise ToolFailure(
             code="INVALID_PARAM",
@@ -160,6 +163,7 @@ def _validate_command(command: str) -> str:
 
 
 def _validate_timeout(timeout_ms: int) -> int:
+    """校验timeout，供 Bash 工具 流程复用。"""
     if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, int):
         raise ToolFailure(
             code="INVALID_PARAM",
@@ -176,6 +180,7 @@ def _validate_timeout(timeout_ms: int) -> int:
 
 
 def _resolve_directory(directory: str, *, runtime_context: ToolRuntimeContext | None):
+    """解析directory，供 Bash 工具 流程复用。"""
     workspace_root = runtime_context.execution_root if runtime_context is not None else None
     workspace_path = resolve_workspace_path(directory, workspace_root=workspace_root)
     ensure_exists(workspace_path)
@@ -197,6 +202,7 @@ def _build_text(
     stderr: str,
     timed_out: bool,
 ) -> str:
+    """构建text，供 Bash 工具 流程复用。"""
     headline = "命令执行成功" if exit_code == 0 and not timed_out else "命令执行未完全成功"
     exit_text = "N/A" if exit_code is None else str(exit_code)
     lines = [f"{headline}：{command}", f"(Exit code {exit_text}. Took {time_ms}ms)"]
@@ -217,6 +223,7 @@ def _apply_bash_output_truncation(
     workspace_root: Path | None,
 ) -> tuple[dict[str, Any], str, bool]:
     # Bash 最容易产生超长 stdout/stderr，所以在最终封装前统一过一层共享截断机制。
+    """处理apply bash output truncation，支撑 Bash 工具 流程。"""
     output_truncation = maybe_truncate_output_text(
         tool_name="Bash",
         full_output=text,
@@ -415,6 +422,7 @@ def _bash_tool(
     timeout_ms: int = DEFAULT_TIMEOUT_MS,
 ) -> ToolResponse:
     # Bash 主体仍然保持最小执行语义；wrapper 额外负责 tool tracing。
+    """处理bash tool，支撑 Bash 工具 流程。"""
     params_input = {
         "command": command,
         "directory": directory,

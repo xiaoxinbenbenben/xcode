@@ -12,6 +12,7 @@ from src.tasks.task_store import create_task, list_tasks
 
 
 def _background_output_path(runtime_context: ToolRuntimeContext, task_id: int) -> Path:
+    """处理background output path，支撑 后台任务 流程。"""
     background_dir = runtime_context.session_dir / "background"
     background_dir.mkdir(parents=True, exist_ok=True)
     return background_dir / f"task_{task_id}.log"
@@ -19,6 +20,7 @@ def _background_output_path(runtime_context: ToolRuntimeContext, task_id: int) -
 
 def _display_artifact_path(runtime_context: ToolRuntimeContext, path: Path) -> str:
     # 会话目录可能在项目外的临时根目录里，路径显示优先相对 session_root，再回退绝对路径。
+    """处理display artifact path，支撑 后台任务 流程。"""
     return display_path(
         path,
         runtime_context.session_dir,
@@ -28,6 +30,7 @@ def _display_artifact_path(runtime_context: ToolRuntimeContext, path: Path) -> s
 
 
 def _summarize_background_result(*, command: str, exit_code: int) -> str:
+    """摘要化background result，供 后台任务 流程复用。"""
     if exit_code == 0:
         return f"{command} completed successfully."
     return f"{command} failed with exit code {exit_code}."
@@ -35,6 +38,7 @@ def _summarize_background_result(*, command: str, exit_code: int) -> str:
 
 def _execute(runtime_context: ToolRuntimeContext, task_id: int, command: str) -> None:
     # 后台线程里允许阻塞执行命令，但结果必须回写任务图并发通知给主线程。
+    """处理execute，支撑 后台任务 流程。"""
     result = subprocess.run(
         command,
         shell=True,
@@ -76,6 +80,7 @@ def start_background_command(
     title: str | None = None,
 ) -> dict[str, Any]:
     # background task 先登记任务，再立即返回，不阻塞当前 agent 回合。
+    """启动background command，供 后台任务 流程复用。"""
     task = create_task(
         tasks_dir=runtime_context.tasks_dir,
         title=(title or command).strip()[:60] or "后台命令",
@@ -98,11 +103,13 @@ def start_background_command(
 
 
 def drain_notifications(runtime_context: ToolRuntimeContext) -> list[dict[str, object]]:
+    """取出并清空notifications，供 后台任务 流程复用。"""
     return runtime_context.drain_background_notifications()
 
 
 def mark_interrupted_running_tasks(*, tasks_dir: Path) -> int:
     # 进程退出后守护线程会消失，所以恢复 session 时要把旧 running 任务改成失败。
+    """标记interrupted running tasks，供 后台任务 流程复用。"""
     updated_count = 0
     for task in list_tasks(tasks_dir):
         if task.get("status") != "running":

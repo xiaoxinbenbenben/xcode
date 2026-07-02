@@ -75,6 +75,7 @@ def _skill_tool(
     args: str = "",
 ) -> ToolResponse:
     # Skill 只是一个普通工具：按需把技能正文取回来，不反向控制主架构。
+    """处理skill tool，支撑 技能工具 流程。"""
     params_input = {"name": name, "args": args}
     return run_traced_tool(
         ctx.context,

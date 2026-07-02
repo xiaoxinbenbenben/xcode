@@ -23,12 +23,14 @@ export type InputAction =
 
 export const MAX_VISIBLE_INPUT_LINES = 6;
 
+/** 获取输入框当前应该展示的末尾可见行。 */
 export function getVisibleInputLines(text: string): string[] {
 	// 输入区只保留最后几行可见内容，避免长 prompt 把整个 TUI 顶飞。
 	const lines = text.split('\n');
 	return lines.slice(-MAX_VISIBLE_INPUT_LINES);
 }
 
+/** 把 Ink 键盘事件转换成输入模型可以消费的动作。 */
 export function applyInputKey(state: InputState, event: InputKey): InputAction {
 	const {inputChunk, key} = event;
 

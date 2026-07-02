@@ -10,8 +10,8 @@ from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
+from src.hooks import HookContext, HookEvent
 from src.protocol import ToolResponse, error_response
-from src.permissions import PermissionDecision, PermissionRequest, PermissionResult
 from src.runtime.paths import display_path, get_default_workspace_root, get_workspace_memory_dir
 
 # 这层只放所有本地工具共享的基础能力：
@@ -75,6 +75,7 @@ class OutputTruncation:
     full_output_path: str
 
     def as_dict(self) -> dict[str, int | str]:
+        """把当前对象转换成可序列化的字典。"""
         return {
             "max_lines": self.max_lines,
             "max_bytes": self.max_bytes,
@@ -96,14 +97,17 @@ class ToolFailure(Exception):
 
 
 def start_timer() -> float:
+    """启动timer，供 工具公共层 流程复用。"""
     return perf_counter()
 
 
 def elapsed_ms(start_time: float) -> int:
+    """计算耗时ms，供 工具公共层 流程复用。"""
     return max(0, int((perf_counter() - start_time) * 1000))
 
 
 def build_stats(start_time: float, **extra: int | float | str) -> dict[str, int | float | str]:
+    """构建stats，供 工具公共层 流程复用。"""
     return {"time_ms": elapsed_ms(start_time), **extra}
 
 
@@ -115,6 +119,7 @@ def build_context(
     **extra: Any,
 ) -> dict[str, Any]:
     # cwd 字段描述的是这次调用真正使用的执行根，不再默认绑定 agent 自己仓库。
+    """构建context，供 工具公共层 流程复用。"""
     context: dict[str, Any] = {
         "cwd": cwd,
         "params_input": params_input,
@@ -127,10 +132,12 @@ def build_context(
 
 def get_workspace_memory_allow_roots(*, workspace_root: Path | None = None) -> tuple[Path, ...]:
     # 长期记忆目录是唯一允许跳出 execution_root 的文件访问 carve-out。
+    """获取workspace memory allow roots，供 工具公共层 流程复用。"""
     return (get_workspace_memory_dir(workspace_root=workspace_root),)
 
 
 def _match_allowed_root(path: Path, *, roots: tuple[Path, ...]) -> Path | None:
+    """匹配allowed root，供 工具公共层 流程复用。"""
     resolved_path = path.resolve(strict=False)
     for root in roots:
         try:
@@ -152,6 +159,7 @@ def error_from_failure(
     **context_extra: Any,
 ) -> ToolResponse:
     # 所有工具都通过这一层把内部失败映射成统一协议，避免每个工具手拼 error 信封。
+    """构建错误from failure，供 工具公共层 流程复用。"""
     error_data: dict[str, Any] = {}
     if failure.data:
         error_data.update(failure.data)
@@ -172,68 +180,6 @@ def error_from_failure(
     )
 
 
-def _build_permission_request(
-    runtime_context: Any,
-    *,
-    tool_name: str,
-    params_input: dict[str, Any],
-) -> PermissionRequest:
-    # actor_name 让后续 CLI、TUI、teammate trace 都能知道是谁发起了这次申请。
-    actor_name = getattr(runtime_context, "actor_name", "team-lead")
-    return PermissionRequest(
-        tool_name=tool_name,
-        params_input=params_input,
-        actor_name=str(actor_name or "team-lead"),
-    )
-
-
-def _authorize_tool_call(
-    runtime_context: Any,
-    *,
-    tool_name: str,
-    params_input: dict[str, Any],
-) -> PermissionResult | None:
-    # 没有 runtime context 的直接函数调用保持原有语义；CLI/TUI 正常运行都会带 context。
-    if runtime_context is None:
-        return None
-    permission_engine = getattr(runtime_context, "permission_engine", None)
-    if permission_engine is None:
-        return None
-
-    request = _build_permission_request(
-        runtime_context,
-        tool_name=tool_name,
-        params_input=params_input,
-    )
-    result = permission_engine.authorize(request)
-    if result.decision == PermissionDecision.ALLOW:
-        return None
-    return result
-
-
-def _permission_denied_response(
-    *,
-    tool_name: str,
-    params_input: dict[str, Any],
-    permission_result: PermissionResult,
-) -> ToolResponse:
-    return error_response(
-        code=permission_result.code,
-        message=permission_result.reason,
-        text=f"工具调用被权限系统拒绝：{tool_name}。{permission_result.reason}",
-        stats={"time_ms": 0},
-        context=build_context(params_input=params_input, cwd="."),
-        data={
-            "tool_name": tool_name,
-            "permission": {
-                "decision": permission_result.decision.value,
-                "source": permission_result.source,
-                "reason": permission_result.reason,
-            },
-        },
-    )
-
-
 def run_traced_tool(
     runtime_context: Any,
     *,
@@ -241,35 +187,41 @@ def run_traced_tool(
     params_input: dict[str, Any],
     invoke: Any,
 ) -> ToolResponse:
-    # tracing 只挂在 wrapper 边界：
-    # 这样既能统一记录工具事件，又不把日志逻辑散进每个工具主体。
-    if runtime_context is not None:
-        runtime_context.log_trace_tool_call(
-            tool_name=tool_name,
-            args=params_input,
-        )
-    permission_result = _authorize_tool_call(
-        runtime_context,
-        tool_name=tool_name,
-        params_input=params_input,
-    )
-    if permission_result is not None:
-        result = _permission_denied_response(
-            tool_name=tool_name,
-            params_input=params_input,
-            permission_result=permission_result,
-        )
-        if runtime_context is not None:
-            runtime_context.log_trace_tool_result(
+    # wrapper 只保留 hook 边界；权限、trace 等横切逻辑都由 hook 承载。
+    """执行traced tool，供 工具公共层 流程复用。"""
+    hook_registry = getattr(runtime_context, "hook_registry", None)
+    if hook_registry is not None:
+        pre_result = hook_registry.run(
+            HookEvent.PRE_TOOL_USE,
+            HookContext(
+                runtime_context=runtime_context,
                 tool_name=tool_name,
-                result=result,
+                params_input=params_input,
+            ),
+        )
+        if pre_result.stop:
+            result = pre_result.response
+            hook_registry.run(
+                HookEvent.POST_TOOL_USE,
+                HookContext(
+                    runtime_context=runtime_context,
+                    tool_name=tool_name,
+                    params_input=params_input,
+                    tool_result=result,
+                ),
             )
-        return result
+            return result
+
     result = invoke()
-    if runtime_context is not None:
-        runtime_context.log_trace_tool_result(
-            tool_name=tool_name,
-            result=result,
+    if hook_registry is not None:
+        hook_registry.run(
+            HookEvent.POST_TOOL_USE,
+            HookContext(
+                runtime_context=runtime_context,
+                tool_name=tool_name,
+                params_input=params_input,
+                tool_result=result,
+            ),
         )
     return result
 
@@ -281,34 +233,41 @@ async def run_traced_tool_async(
     params_input: dict[str, Any],
     invoke: Any,
 ) -> ToolResponse:
-    # Compact 这类异步工具也走同一套 wrapper tracing 语义，避免同步/异步两套日志格式分叉。
-    if runtime_context is not None:
-        runtime_context.log_trace_tool_call(
-            tool_name=tool_name,
-            args=params_input,
-        )
-    permission_result = _authorize_tool_call(
-        runtime_context,
-        tool_name=tool_name,
-        params_input=params_input,
-    )
-    if permission_result is not None:
-        result = _permission_denied_response(
-            tool_name=tool_name,
-            params_input=params_input,
-            permission_result=permission_result,
-        )
-        if runtime_context is not None:
-            runtime_context.log_trace_tool_result(
+    # 异步工具复用同一 hook 边界，避免同步/异步两套横切逻辑分叉。
+    """执行traced tool async，供 工具公共层 流程复用。"""
+    hook_registry = getattr(runtime_context, "hook_registry", None)
+    if hook_registry is not None:
+        pre_result = hook_registry.run(
+            HookEvent.PRE_TOOL_USE,
+            HookContext(
+                runtime_context=runtime_context,
                 tool_name=tool_name,
-                result=result,
+                params_input=params_input,
+            ),
+        )
+        if pre_result.stop:
+            result = pre_result.response
+            hook_registry.run(
+                HookEvent.POST_TOOL_USE,
+                HookContext(
+                    runtime_context=runtime_context,
+                    tool_name=tool_name,
+                    params_input=params_input,
+                    tool_result=result,
+                ),
             )
-        return result
+            return result
+
     result = await invoke()
-    if runtime_context is not None:
-        runtime_context.log_trace_tool_result(
-            tool_name=tool_name,
-            result=result,
+    if hook_registry is not None:
+        hook_registry.run(
+            HookEvent.POST_TOOL_USE,
+            HookContext(
+                runtime_context=runtime_context,
+                tool_name=tool_name,
+                params_input=params_input,
+                tool_result=result,
+            ),
         )
     return result
 
@@ -319,6 +278,7 @@ def resolve_workspace_path(
     workspace_root: Path | None = None,
     allow_roots: tuple[Path, ...] = (),
 ) -> WorkspacePath:
+    """解析workspace path，供 工具公共层 流程复用。"""
     raw_path = path or "."
     active_root = (workspace_root or get_default_workspace_root()).resolve()
     candidate = Path(raw_path)
@@ -348,6 +308,7 @@ def resolve_workspace_path(
 
 
 def ensure_exists(workspace_path: WorkspacePath) -> None:
+    """确保exists，供 工具公共层 流程复用。"""
     if not workspace_path.resolved.exists():
         raise ToolFailure(
             code="NOT_FOUND",
@@ -357,10 +318,12 @@ def ensure_exists(workspace_path: WorkspacePath) -> None:
 
 
 def is_hidden_name(name: str) -> bool:
+    """判断hidden name，供 工具公共层 流程复用。"""
     return name.startswith(".")
 
 
 def matches_ignore_patterns(path_value: str, patterns: list[str] | None) -> bool:
+    """处理matches ignore patterns，支撑 工具公共层 流程。"""
     if not patterns:
         return False
     basename = Path(path_value).name
@@ -379,6 +342,7 @@ def should_skip_entry(
 ) -> bool:
     # 隐藏项、默认忽略项、调用方自定义 ignore 都在这里统一判定。
     # 这样 LS / Glob / Grep 可以共享同一套过滤语义。
+    """判断是否应当skip entry，供 工具公共层 流程复用。"""
     parts = [part for part in Path(relative_posix).parts if part not in {".", ""}]
     name = Path(relative_posix).name
 
@@ -391,12 +355,14 @@ def should_skip_entry(
 
 def sort_key_for_entry(path: Path) -> tuple[int, str]:
     # 目录优先能让 agent 更快看清结构，再决定是否继续深入读取。
+    """排序key for entry，供 工具公共层 流程复用。"""
     is_dir = path.is_dir()
     return (0 if is_dir else 1, path.name.casefold())
 
 
 def normalize_posix(path: Path, *, workspace_root: Path | None = None) -> str:
     # 返回给 agent 的路径优先相对当前执行根目录；不在根内时回退绝对路径，供 memory dir 等 carve-out 使用。
+    """规范化posix，供 工具公共层 流程复用。"""
     active_root = (workspace_root or get_default_workspace_root()).resolve()
     resolved_path = path.resolve(strict=False)
     try:
@@ -407,6 +373,7 @@ def normalize_posix(path: Path, *, workspace_root: Path | None = None) -> str:
 
 
 def _read_positive_int_env(name: str, default: int) -> int:
+    """读取positive int env，供 工具公共层 流程复用。"""
     raw_value = os.environ.get(name)
     if raw_value is None:
         return default
@@ -421,6 +388,7 @@ def _read_positive_int_env(name: str, default: int) -> int:
 
 def get_tool_output_limits() -> ToolOutputLimits:
     # 阈值按调用时动态读取，测试和后续配置覆盖都不需要重启进程。
+    """获取tool output limits，供 工具公共层 流程复用。"""
     return ToolOutputLimits(
         max_lines=_read_positive_int_env("TOOL_OUTPUT_MAX_LINES", DEFAULT_TOOL_OUTPUT_MAX_LINES),
         max_bytes=_read_positive_int_env("TOOL_OUTPUT_MAX_BYTES", DEFAULT_TOOL_OUTPUT_MAX_BYTES),
@@ -428,6 +396,7 @@ def get_tool_output_limits() -> ToolOutputLimits:
 
 
 def count_text_lines(text: str) -> int:
+    """统计text lines，供 工具公共层 流程复用。"""
     if not text:
         return 0
     return len(text.splitlines())
@@ -435,6 +404,7 @@ def count_text_lines(text: str) -> int:
 
 def build_output_preview(text: str, *, max_lines: int, max_bytes: int) -> str:
     # 预览始终走同一套 head 规则，避免每个工具各自决定保留多少内容。
+    """构建output preview，供 工具公共层 流程复用。"""
     if not text:
         return ""
 
@@ -452,6 +422,7 @@ def get_tool_output_dir(
     runtime_context: Any | None = None,
     workspace_root: Path | None = None,
 ) -> Path:
+    """获取tool output dir，供 工具公共层 流程复用。"""
     configured_dir = os.environ.get("TOOL_OUTPUT_DIR", DEFAULT_TOOL_OUTPUT_DIR)
     candidate = Path(configured_dir)
     if candidate.is_absolute():
@@ -470,6 +441,7 @@ def maybe_truncate_output_text(
 ) -> OutputTruncation | None:
     # 这层统一负责“大输出治理”：
     # 判阈值、生成预览、落盘完整输出，并把回查路径返回给工具层。
+    """按需处理truncate output text，供 工具公共层 流程复用。"""
     if not full_output:
         return None
 
@@ -512,6 +484,7 @@ def maybe_truncate_output_text(
 
 def build_output_truncation_notice(truncation: OutputTruncation) -> str:
     # 提示里直接暴露 Read / Grep 可消费的相对路径，方便模型后续回查完整内容。
+    """构建output truncation notice，供 工具公共层 流程复用。"""
     return (
         "\n\n完整输出已写入 "
         f"'{truncation.full_output_path}'，当前只返回预览。"
@@ -521,6 +494,7 @@ def build_output_truncation_notice(truncation: OutputTruncation) -> str:
 
 def get_file_snapshot(path: Path) -> FileSnapshot:
     # 用 ns 再转 ms，能比直接读 st_mtime 更稳定，也更接近后续要给模型传递的整数锁值。
+    """获取file snapshot，供 工具公共层 流程复用。"""
     stat_result = path.stat()
     return FileSnapshot(
         mtime_ms=int(stat_result.st_mtime_ns // 1_000_000),
@@ -530,6 +504,7 @@ def get_file_snapshot(path: Path) -> FileSnapshot:
 
 def read_workspace_text_file(workspace_path: WorkspacePath) -> tuple[str, str, str | None]:
     # Read / Edit / Write 共用这条文本读取路径，保证二进制检测和解码回退语义一致。
+    """读取workspace text file，供 工具公共层 流程复用。"""
     binary_head = workspace_path.resolved.read_bytes()[:8192]
     if b"\x00" in binary_head:
         raise ToolFailure(
@@ -557,6 +532,7 @@ def require_existing_file_lock(
     expected_size_bytes: int | None,
 ) -> FileSnapshot:
     # 当前没有 session 和隐藏缓存，所以已有文件上的锁值必须显式从 Read 结果里传回来。
+    """处理require existing file lock，支撑 工具公共层 流程。"""
     if isinstance(expected_mtime_ms, bool) or isinstance(expected_size_bytes, bool):
         raise ToolFailure(
             code="INVALID_PARAM",

@@ -30,6 +30,7 @@ from src.tools.common import (
 def _public_member_view(member: dict[str, object]) -> dict[str, object]:
     # transcript_path 是 session 内部调试产物路径。
     # 在 workspace 模式下它并不一定可被 Read 直接访问，所以不暴露给模型。
+    """处理public member view，支撑 团队工具 流程。"""
     return {
         key: value
         for key, value in member.items()
@@ -39,6 +40,7 @@ def _public_member_view(member: dict[str, object]) -> dict[str, object]:
 
 def _public_team_view(result: dict[str, object]) -> dict[str, object]:
     # List / Spawn 都统一走这层裁剪，避免模型把内部调试字段当成工作区文件路径。
+    """处理public team view，支撑 团队工具 流程。"""
     data = dict(result)
     member = data.get("member")
     if isinstance(member, dict):
@@ -60,6 +62,7 @@ def _spawn_teammate(
     runtime_context: ToolRuntimeContext | None = None,
 ) -> ToolResponse:
     # 这里先只包装 team runtime 的最小创建能力，不顺手做 task/worktree 绑定。
+    """启动teammate，供 团队工具 流程复用。"""
     start_time = start_timer()
     params_input = {
         "name": name,
@@ -102,6 +105,7 @@ def _spawn_teammate(
 
 def _list_teammates(*, runtime_context: ToolRuntimeContext | None = None) -> ToolResponse:
     # ListTeammates 只返回当前 team_state 视图，不去推导额外状态。
+    """列出teammates，供 团队工具 流程复用。"""
     start_time = start_timer()
     params_input: dict[str, object] = {}
     try:
@@ -141,6 +145,7 @@ def _send_message(
     runtime_context: ToolRuntimeContext | None = None,
 ) -> ToolResponse:
     # 显式消息发送是 Phase 1 唯一协作入口，不把 inbox 读取暴露给模型。
+    """发送message，供 团队工具 流程复用。"""
     start_time = start_timer()
     params_input = {
         "to": to,
@@ -188,6 +193,7 @@ def _shutdown_request(
     runtime_context: ToolRuntimeContext | None = None,
 ) -> ToolResponse:
     # ShutdownRequest 是显式的 phase 2 协议入口，返回 request_id 而不是直接等待结束。
+    """处理shutdown request，支撑 团队工具 流程。"""
     start_time = start_timer()
     params_input = {
         "name": name,
@@ -232,6 +238,7 @@ def _shutdown_response(
     runtime_context: ToolRuntimeContext | None = None,
 ) -> ToolResponse:
     # 这个工具只给 teammate 用，用来显式响应 shutdown_request。
+    """处理shutdown response，支撑 团队工具 流程。"""
     start_time = start_timer()
     params_input = {
         "request_id": request_id,
@@ -283,6 +290,7 @@ def _plan_approval(
 ) -> ToolResponse:
     # 这个工具一体承接 plan review 的 request / response。
     # teammate 用 request，team-lead 用 response。
+    """处理plan approval，支撑 团队工具 流程。"""
     start_time = start_timer()
     params_input = {
         "mode": mode,
@@ -358,6 +366,7 @@ def _claim_task(
     runtime_context: ToolRuntimeContext | None = None,
 ) -> ToolResponse:
     # ClaimTask 只给 teammate 用，让 worker 显式确认“下一条工作来自 task board”。
+    """领取task，供 团队工具 流程复用。"""
     start_time = start_timer()
     params_input: dict[str, object] = {}
     try:
@@ -401,6 +410,7 @@ def _idle(
 ) -> ToolResponse:
     # teammate 当前本来就会在每轮结束后回到 idle。
     # 这个工具先只提供一个显式“我现在空闲了”的信号入口。
+    """处理idle，支撑 团队工具 流程。"""
     start_time = start_timer()
     params_input = {"summary": summary}
     try:
@@ -444,6 +454,7 @@ def _spawn_teammate_tool(
     prompt: str,
 ) -> ToolResponse:
     # SDK function tool wrapper 只负责接 RunContextWrapper，再转发给纯函数主体。
+    """启动teammate tool，供 团队工具 流程复用。"""
     params_input = {
         "name": name,
         "role": role,
@@ -463,6 +474,7 @@ def _spawn_teammate_tool(
 
 
 def _list_teammates_tool(ctx: RunContextWrapper[ToolRuntimeContext]) -> ToolResponse:
+    """列出teammates tool，供 团队工具 流程复用。"""
     return run_traced_tool(
         ctx.context,
         tool_name="ListTeammates",
@@ -479,6 +491,7 @@ def _send_message_tool(
     message_type: str = "message",
 ) -> ToolResponse:
     # SendMessage 同时服务 lead 和 teammate，所以这里不硬编码发送者。
+    """发送message tool，供 团队工具 流程复用。"""
     params_input = {
         "to": to,
         "content": content,
@@ -504,6 +517,7 @@ def _shutdown_request_tool(
     name: str,
     content: str = "请结束当前 teammate 运行。",
 ) -> ToolResponse:
+    """处理shutdown request tool，支撑 团队工具 流程。"""
     params_input = {
         "name": name,
         "content": content,
@@ -526,6 +540,7 @@ def _shutdown_response_tool(
     status: str,
     feedback: str | None = None,
 ) -> ToolResponse:
+    """处理shutdown response tool，支撑 团队工具 流程。"""
     params_input = {
         "request_id": request_id,
         "status": status,
@@ -554,6 +569,7 @@ def _plan_approval_tool(
     feedback: str | None = None,
     to: str = "team-lead",
 ) -> ToolResponse:
+    """处理plan approval tool，支撑 团队工具 流程。"""
     params_input = {
         "mode": mode,
         "summary": summary,
@@ -582,6 +598,7 @@ def _plan_approval_tool(
 
 def _claim_task_tool(ctx: RunContextWrapper[ToolRuntimeContext]) -> ToolResponse:
     # teammate 的 ClaimTask 不接受外部参数，避免模型自己拼 task_id 破坏认领规则。
+    """领取task tool，供 团队工具 流程复用。"""
     return run_traced_tool(
         ctx.context,
         tool_name="ClaimTask",
@@ -594,6 +611,7 @@ def _idle_tool(
     ctx: RunContextWrapper[ToolRuntimeContext],
     summary: str | None = None,
 ) -> ToolResponse:
+    """处理idle tool，支撑 团队工具 流程。"""
     params_input = {"summary": summary}
     return run_traced_tool(
         ctx.context,

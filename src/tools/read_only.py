@@ -37,6 +37,7 @@ from src.tools.common import (
 
 
 def _active_workspace_root(runtime_context: ToolRuntimeContext | None) -> Path:
+    """处理active workspace root，支撑 只读工具 流程。"""
     if runtime_context is None:
         return get_default_workspace_root()
     return runtime_context.execution_root
@@ -44,12 +45,14 @@ def _active_workspace_root(runtime_context: ToolRuntimeContext | None) -> Path:
 
 def _memory_allow_roots(runtime_context: ToolRuntimeContext | None) -> tuple[Path, ...]:
     # memory dir 绑定的是 session 的 workspace_root，而不是可能切到 worktree 的 execution_root。
+    """处理memory allow roots，支撑 只读工具 流程。"""
     if runtime_context is None:
         return get_workspace_memory_allow_roots()
     return get_workspace_memory_allow_roots(workspace_root=runtime_context.workspace_root)
 
 
 def _format_listing_line(entry: dict[str, str]) -> str:
+    """处理format listing line，支撑 只读工具 流程。"""
     suffix = "/" if entry["type"] == "dir" else "@"
     if entry["type"] == "file":
         suffix = ""
@@ -57,6 +60,7 @@ def _format_listing_line(entry: dict[str, str]) -> str:
 
 
 def _make_entry(path: Path, *, workspace_root: Path) -> dict[str, str]:
+    """创建entry，供 只读工具 流程复用。"""
     entry_type = "link" if path.is_symlink() else ("dir" if path.is_dir() else "file")
     return {
         "path": normalize_posix(path, workspace_root=workspace_root),
@@ -66,6 +70,7 @@ def _make_entry(path: Path, *, workspace_root: Path) -> dict[str, str]:
 
 def _glob_matches(relative_path: str, pattern: str) -> bool:
     # 给 `**/foo` 做零层兼容，这样既能匹配 `a/b/foo`，也能匹配根下的 `foo`。
+    """执行 globmatches，供 只读工具 流程复用。"""
     candidate = PurePosixPath(relative_path)
     return candidate.match(pattern) or (
         pattern.startswith("**/") and candidate.match(pattern[3:])
@@ -79,6 +84,7 @@ def _iter_workspace_files(
     include_hidden: bool,
     include_ignored: bool,
 ) -> list[Path]:
+    """处理iter workspace files，支撑 只读工具 流程。"""
     files: list[Path] = []
     for current_root, dir_names, file_names in os.walk(search_root):
         root_path = Path(current_root)
@@ -110,7 +116,9 @@ def _iter_workspace_files(
 
 def _sort_grep_matches(matches: list[dict[str, Any]], *, workspace_root: Path) -> list[dict[str, Any]]:
     # 先按 mtime 降序，再按路径和行号稳定排序，尽量保留 legacy 里“最近活跃代码优先”的语义。
+    """排序grep matches，供 只读工具 流程复用。"""
     def sort_key(match: dict[str, Any]) -> tuple[float, str, int]:
+        """排序key，供 只读工具 流程复用。"""
         file_path = workspace_root / match["file"]
         try:
             mtime = file_path.stat().st_mtime
@@ -130,6 +138,7 @@ def _grep_with_rg(
     workspace_root: Path,
 ) -> list[dict[str, Any]]:
     # 优先走 rg，让“按内容找证据”保持足够快；这里只负责执行和解析，不做协议封装。
+    """处理grep with rg，支撑 只读工具 流程。"""
     command = ["rg", "--line-number", "--no-heading", "--color", "never"]
     if not case_sensitive:
         command.append("-i")
@@ -172,6 +181,7 @@ def _grep_with_python(
     workspace_root: Path,
 ) -> tuple[list[dict[str, Any]], bool]:
     # Python 路径只做最小回退实现：保证无 rg 时工具仍可用，但性能和覆盖率可能打折。
+    """处理grep with python，支撑 只读工具 流程。"""
     matches: list[dict[str, Any]] = []
     truncated = False
 
@@ -701,6 +711,7 @@ def _ls_tool(
     include_hidden: bool = False,
     ignore: list[str] | None = None,
 ) -> ToolResponse:
+    """处理ls tool，支撑 只读工具 流程。"""
     params_input = {
         "path": path,
         "offset": offset,
@@ -731,6 +742,7 @@ def _glob_tool(
     include_hidden: bool = False,
     include_ignored: bool = False,
 ) -> ToolResponse:
+    """执行 globtool，供 只读工具 流程复用。"""
     params_input = {
         "pattern": pattern,
         "path": path,
@@ -761,6 +773,7 @@ def _grep_tool(
     case_sensitive: bool = False,
     limit: int = 100,
 ) -> ToolResponse:
+    """处理grep tool，支撑 只读工具 流程。"""
     params_input = {
         "pattern": pattern,
         "path": path,
@@ -790,6 +803,7 @@ def _read_file_tool(
     limit: int = 500,
 ) -> ToolResponse:
     # SDK session 负责消息历史，这里的 runtime context 负责文件快照和 tool tracing。
+    """读取file tool，供 只读工具 流程复用。"""
     params_input = {
         "path": path,
         "start_line": start_line,

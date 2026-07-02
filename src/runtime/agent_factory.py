@@ -5,6 +5,7 @@ from src.tools.registry import AGENT_TOOLS
 
 def _build_default_instructions() -> str:
     # 这里复用 context builder 的 L1/L2 拼装，避免稳定提示词再次散落回 runtime。
+    """构建default instructions，供 Agent 工厂 流程复用。"""
     stable_layer = build_stable_context_layer([tool.name for tool in AGENT_TOOLS])
     repo_rule_layer = build_repo_rule_layer()
     sections = [

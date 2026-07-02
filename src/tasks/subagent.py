@@ -17,6 +17,7 @@ SUBAGENT_TYPE_PROMPTS = {
 
 
 def _resolve_model(runtime_context: ToolRuntimeContext, model_route: str | None) -> str:
+    """解析model，供 子 Agent 任务 流程复用。"""
     if model_route == "light":
         return runtime_context.light_model or runtime_context.main_model or runtime_context.current_model or "gpt-5"
     return runtime_context.main_model or runtime_context.current_model or "gpt-5.2-codex"
@@ -24,12 +25,14 @@ def _resolve_model(runtime_context: ToolRuntimeContext, model_route: str | None)
 
 def _resolve_tools(*, subagent_type: str | None, model_route: str | None):
     # 子代理默认只读；只有 plan + main 才额外拿到 TodoWrite。
+    """解析tools，供 子 Agent 任务 流程复用。"""
     if subagent_type == "plan" and model_route == "main":
         return [*READ_ONLY_TOOLS, *TODO_TOOLS]
     return list(READ_ONLY_TOOLS)
 
 
 def _build_subagent_instructions(subagent_type: str | None) -> str:
+    """构建subagent instructions，供 子 Agent 任务 流程复用。"""
     role_prompt = SUBAGENT_TYPE_PROMPTS.get(subagent_type or "general", SUBAGENT_TYPE_PROMPTS["general"])
     return (
         f"{role_prompt}\n"
@@ -45,6 +48,7 @@ async def run_subagent_task(
     task_id: int,
 ) -> dict[str, object]:
     # TaskRun 的职责是同步跑完一个分析子代理，再把摘要写回任务图。
+    """执行subagent task，供 子 Agent 任务 流程复用。"""
     task = get_task(runtime_context.tasks_dir, task_id)
     updated_task = update_task(
         tasks_dir=runtime_context.tasks_dir,

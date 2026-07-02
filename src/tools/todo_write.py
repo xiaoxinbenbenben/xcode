@@ -36,6 +36,7 @@ class TodoInputItem(TypedDict):
 
 
 def _normalize_summary(summary: str) -> str:
+    """规范化summary，供 待办工具 流程复用。"""
     if not isinstance(summary, str) or not summary.strip():
         raise ToolFailure(
             code="INVALID_PARAM",
@@ -46,6 +47,7 @@ def _normalize_summary(summary: str) -> str:
 
 
 def _normalize_todos(todos: list[TodoInputItem]) -> list[dict[str, str]]:
+    """规范化todos，供 待办工具 流程复用。"""
     if not isinstance(todos, list) or not todos:
         raise ToolFailure(
             code="INVALID_PARAM",
@@ -110,6 +112,7 @@ def _normalize_todos(todos: list[TodoInputItem]) -> list[dict[str, str]]:
 
 
 def _count_statuses(todos: list[dict[str, str]]) -> dict[str, int]:
+    """统计statuses，供 待办工具 流程复用。"""
     counts = {
         "total": len(todos),
         "pending": 0,
@@ -123,6 +126,7 @@ def _count_statuses(todos: list[dict[str, str]]) -> dict[str, int]:
 
 
 def _build_recap(todos: list[dict[str, str]]) -> str:
+    """构建recap，供 待办工具 流程复用。"""
     counts = _count_statuses(todos)
     done_count = counts["completed"] + counts["cancelled"]
     prefix = f"[{done_count}/{counts['total']}]"
@@ -152,6 +156,7 @@ def _build_recap(todos: list[dict[str, str]]) -> str:
 
 
 def _status_marker(status: str) -> str:
+    """处理status marker，支撑 待办工具 流程。"""
     return {
         "pending": "[ ]",
         "in_progress": "[>]",
@@ -166,6 +171,7 @@ def _build_user_text(
     persisted: bool,
     archive_path: str | None,
 ) -> str:
+    """构建user text，供 待办工具 流程复用。"""
     lines = [f"TODO: {summary}"]
     lines.extend(f"{_status_marker(item['status'])} {item['content']}" for item in todos)
     if persisted and archive_path:
@@ -174,11 +180,13 @@ def _build_user_text(
 
 
 def _is_terminal_todo_list(todos: list[dict[str, str]]) -> bool:
+    """判断terminal todo list，供 待办工具 流程复用。"""
     return all(item["status"] in TERMINAL_TODO_STATUSES for item in todos)
 
 
 def _build_completion_fingerprint(summary: str, todos: list[dict[str, str]]) -> str:
     # 这里用 summary + 当前完整列表做 fingerprint，重复提交同一完成态时不再重复归档。
+    """构建completion fingerprint，供 待办工具 流程复用。"""
     payload = json.dumps(
         {"summary": summary, "todos": todos},
         ensure_ascii=False,
@@ -195,6 +203,7 @@ def _build_markdown_block(
     recap: str,
     todos: list[dict[str, str]],
 ) -> str:
+    """构建markdown block，供 待办工具 流程复用。"""
     completed_items = [item["content"] for item in todos if item["status"] == "completed"]
     cancelled_items = [item["content"] for item in todos if item["status"] == "cancelled"]
 
@@ -223,6 +232,7 @@ def _persist_completed_todos(
     recap: str,
     runtime_context: ToolRuntimeContext,
 ) -> tuple[bool, str | None]:
+    """处理persist completed todos，支撑 待办工具 流程。"""
     archive_path = runtime_context.get_todo_archive_path()
     fingerprint = _build_completion_fingerprint(summary, todos)
 
@@ -320,6 +330,7 @@ def _todo_write_tool(
     todos: list[TodoInputItem],
 ) -> ToolResponse:
     # SDK session 负责对话历史，这里的 runtime context 负责 todo 状态与 tool tracing。
+    """处理todo write tool，支撑 待办工具 流程。"""
     params_input = {
         "summary": summary,
         "todos": todos,

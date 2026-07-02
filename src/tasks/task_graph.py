@@ -16,14 +16,17 @@ VALID_TASK_STATUSES = {
 
 
 def _utc_now() -> datetime:
+    """处理utc now，支撑 任务依赖图 流程。"""
     return datetime.now(UTC)
 
 
 def _format_utc(value: datetime) -> str:
+    """处理format utc，支撑 任务依赖图 流程。"""
     return value.isoformat().replace("+00:00", "Z")
 
 
 def _parse_utc(value: str | None) -> datetime | None:
+    """解析utc，供 任务依赖图 流程复用。"""
     if not value:
         return None
     normalized = value.replace("Z", "+00:00")
@@ -31,6 +34,7 @@ def _parse_utc(value: str | None) -> datetime | None:
 
 
 def _merge_ids(existing: list[int], new_ids: list[int]) -> list[int]:
+    """处理merge ids，支撑 任务依赖图 流程。"""
     merged = {int(item) for item in existing}
     merged.update(int(item) for item in new_ids)
     return sorted(merged)
@@ -38,6 +42,7 @@ def _merge_ids(existing: list[int], new_ids: list[int]) -> list[int]:
 
 def _clear_dependency(tasks_dir, completed_task_id: int) -> None:
     # 某个任务完成后，把它从其他任务的 blockedBy 中移除，保持依赖图一致。
+    """清理dependency，供 任务依赖图 流程复用。"""
     for task in list_tasks(tasks_dir):
         if completed_task_id not in task.get("blockedBy", []):
             continue
@@ -49,6 +54,7 @@ def _clear_dependency(tasks_dir, completed_task_id: int) -> None:
 
 def _task_is_claimable(task: dict[str, Any], *, now: datetime) -> bool:
     # blockedBy 只要还有内容，这个任务就不允许 teammate 认领。
+    """处理task is claimable，支撑 任务依赖图 流程。"""
     if task.get("blockedBy"):
         return False
 
@@ -72,6 +78,7 @@ def claim_task(
     lease_seconds: int,
 ) -> dict[str, Any] | None:
     # claim 先按 id 顺序扫描，拿到第一条可执行且 lease 可用的任务。
+    """领取task，供 任务依赖图 流程复用。"""
     now = _utc_now()
     lease_expires_at = _format_utc(now + timedelta(seconds=lease_seconds))
 
@@ -95,6 +102,7 @@ def renew_task_lease(
     lease_seconds: int,
 ) -> dict[str, Any]:
     # 续租只允许当前执行实例自己刷新，避免别的 teammate 偷走任务。
+    """续租task lease，供 任务依赖图 流程复用。"""
     task = get_task(tasks_dir, task_id)
     if str(task.get("owner_agent_id") or "") != owner_agent_id:
         raise ValueError(f"task_{task_id} 当前不属于 {owner_agent_id}")
@@ -116,6 +124,7 @@ def update_task(
     result_artifact: str | None = None,
     error: str | None = None,
 ) -> dict[str, Any]:
+    """更新task，供 任务依赖图 流程复用。"""
     task = get_task(tasks_dir, task_id)
 
     if status is not None:

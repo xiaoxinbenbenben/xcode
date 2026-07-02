@@ -27,6 +27,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
+/** 解析 TUI 启动参数里的 workspace 和 session。 */
 function parseCliArgs(argv: string[]): {workspaceRoot?: string; sessionId?: string} {
 	// TUI 第一版只解析两个最小参数：启动 workspace 和恢复 session。
 	const args: {workspaceRoot?: string; sessionId?: string} = {};
@@ -44,6 +45,7 @@ function parseCliArgs(argv: string[]): {workspaceRoot?: string; sessionId?: stri
 	return args;
 }
 
+/** 启动 Python CLI 子进程，并把 stdout/stderr 按行交给调用方。 */
 function runPythonCli(
 	args: string[],
 	handlers: {
@@ -61,6 +63,7 @@ function runPythonCli(
 		let stdoutBuffer = '';
 		let stderrBuffer = '';
 
+		/** 从缓冲区取出完整行，剩余半行留给下一次 chunk。 */
 		const flushLines = (
 			buffer: string,
 			handleLine: ((line: string) => void) | undefined,
@@ -106,6 +109,7 @@ function runPythonCli(
 	});
 }
 
+/** 通过 Python CLI 初始化或恢复一个 CLI session。 */
 async function bootstrapSession(args: {workspaceRoot?: string; sessionId?: string}): Promise<SessionDescriptor> {
 	// 会话初始化单独走一次 CLI，避免 TUI 自己生成 session id。
 	const cliArgs = ['--print-session-json'];
@@ -130,6 +134,7 @@ async function bootstrapSession(args: {workspaceRoot?: string; sessionId?: strin
 	return descriptor;
 }
 
+/** 把用户 prompt 发送给 CLI，并持续转发 JSONL runtime 事件。 */
 async function streamPrompt(
 	sessionId: string,
 	prompt: string,
@@ -149,6 +154,7 @@ async function streamPrompt(
 	});
 }
 
+/** 将 runtime 事件压缩成右侧活动面板的一行摘要。 */
 function summarizeEvent(event: RuntimeEvent): string | null {
 	// 右侧活动面板默认只展示摘要，不直接把大段 tool_result 或正文塞进去。
 	const payload = event.payload ?? {};
@@ -170,6 +176,7 @@ function summarizeEvent(event: RuntimeEvent): string | null {
 	return null;
 }
 
+/** 把活动面板文本截成稳定的单行展示文本。 */
 function truncateForPanel(text: string, limit = 72): string {
 	// 右侧 activity 先走单行摘要，避免长 JSON/长路径把整个面板撑坏。
 	const normalized = text.replace(/\s+/g, ' ').trim();
@@ -179,6 +186,7 @@ function truncateForPanel(text: string, limit = 72): string {
 	return `${normalized.slice(0, Math.max(0, limit - 1))}…`;
 }
 
+/** 把 assistant 流式增量追加回指定消息段。 */
 function appendAssistantDelta(
 	timeline: TimelineItem[],
 	assistantId: string,
@@ -197,6 +205,7 @@ function appendAssistantDelta(
 	});
 }
 
+/** 在时间线末尾新增一个 assistant 输出段。 */
 function appendAssistantSegment(
 	timeline: TimelineItem[],
 	assistantId: string,
@@ -211,6 +220,7 @@ function appendAssistantSegment(
 	].slice(-30);
 }
 
+/** 渲染 xx-coding 的 Ink TUI 主界面。 */
 function App(): React.ReactElement {
 	const {exit} = useApp();
 	const startupArgs = useMemo(() => parseCliArgs(process.argv.slice(2)), []);
@@ -265,6 +275,7 @@ function App(): React.ReactElement {
 		};
 	}, [startupArgs]);
 
+	/** 向时间线追加一条用户、助手或活动消息。 */
 	const appendTimeline = (kind: TimelineItem['kind'], text: string): void => {
 		// 对话、工具活动、后台/team 事件都统一进一条时间线，UI 更接近聊天流。
 		const nextText = kind === 'activity' ? truncateForPanel(text) : text;
@@ -274,7 +285,9 @@ function App(): React.ReactElement {
 		].slice(-30));
 	};
 
+	/** 提交当前 prompt，并把 CLI 事件流合并回 TUI 状态。 */
 	const submitPrompt = async (prompt: string): Promise<void> => {
+		// prompt 提交流程串起输入清空、事件流处理和错误状态落盘。
 		// prompt 一提交就先清空输入框，再把 user turn 立即放进对话区。
 		// 这样用户看到的是正常聊天流，而不是“输入框里还残留上一轮内容”。
 		if (!session || busy) {

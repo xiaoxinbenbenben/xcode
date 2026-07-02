@@ -54,6 +54,7 @@ SCOPE_PRIORITY: dict[PermissionScope, int] = {
 
 
 def _coerce_decision(value: PermissionDecision | str) -> PermissionDecision:
+    """处理coerce decision，支撑 权限裁决 流程。"""
     if isinstance(value, PermissionDecision):
         return value
     return PermissionDecision(value)
@@ -61,6 +62,7 @@ def _coerce_decision(value: PermissionDecision | str) -> PermissionDecision:
 
 def _shell_words(command: str) -> list[str]:
     # 这里只提取命令词用于权限匹配；失败时返回空列表，让主体工具继续报参数错误。
+    """处理shell words，支撑 权限裁决 流程。"""
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()")
         lexer.whitespace_split = True
@@ -83,6 +85,7 @@ def _shell_words(command: str) -> list[str]:
 
 def _field_values(request: PermissionRequest, field: str) -> list[str]:
     # command_word 是 Bash/BackgroundRun 的专用便利字段，避免规则作者手写脆弱 glob。
+    """处理field values，支撑 权限裁决 流程。"""
     if field == "tool_name":
         return [request.tool_name]
     if field == "command_word":
@@ -97,6 +100,7 @@ def _field_values(request: PermissionRequest, field: str) -> list[str]:
 
 
 def _rule_matches(rule: PermissionRule, request: PermissionRequest) -> bool:
+    """处理rule matches，支撑 权限裁决 流程。"""
     if rule.tool_name not in {"*", request.tool_name} and not fnmatch(request.tool_name, rule.tool_name):
         return False
     if rule.field == "*":
@@ -109,6 +113,7 @@ def _best_matching_rule(
     rules: Iterable[PermissionRule],
 ) -> PermissionRule | None:
     # scope 越靠近当前 session 优先级越高；同一 scope 内后出现的规则覆盖先出现的规则。
+    """处理best matching rule，支撑 权限裁决 流程。"""
     best_rule: PermissionRule | None = None
     best_score = -1
     for index, rule in enumerate(rules):
@@ -122,6 +127,7 @@ def _best_matching_rule(
 
 
 def _hard_deny(request: PermissionRequest) -> PermissionResult | None:
+    """处理hard deny，支撑 权限裁决 流程。"""
     if request.tool_name not in {"Bash", "BackgroundRun"}:
         return None
 
@@ -150,6 +156,7 @@ def _hard_deny(request: PermissionRequest) -> PermissionResult | None:
 
 
 def _default_decision_for_tool(tool_name: str) -> PermissionDecision:
+    """处理default decision for tool，支撑 权限裁决 流程。"""
     if tool_name in READ_ONLY_DEFAULT_ALLOW_TOOLS:
         return PermissionDecision.ALLOW
     if tool_name in ASK_BY_DEFAULT_TOOLS:
@@ -165,10 +172,12 @@ class PermissionEngine:
         approval_callback: ApprovalCallback | None = None,
     ) -> None:
         # rules 先保存在内存里；后续配置文件加载只需要生成同样的 PermissionRule 列表。
+        """初始化对象需要持有的运行状态。"""
         self.rules = list(rules)
         self.approval_callback = approval_callback
 
     def evaluate(self, request: PermissionRequest) -> PermissionResult:
+        """评估PermissionEngine 的权限裁决，供 权限裁决 流程复用。"""
         hard_deny = _hard_deny(request)
         if hard_deny is not None:
             return hard_deny
@@ -194,6 +203,7 @@ class PermissionEngine:
 
     def authorize(self, request: PermissionRequest) -> PermissionResult:
         # ask 是唯一会触发用户交互的裁决；没有回调时保守拒绝，避免静默执行高风险工具。
+        """授权PermissionEngine 的权限裁决，供 权限裁决 流程复用。"""
         result = self.evaluate(request)
         if result.decision != PermissionDecision.ASK:
             return result

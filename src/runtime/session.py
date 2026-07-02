@@ -13,6 +13,7 @@ from uuid import uuid4
 from agents import SQLiteSession
 
 from src.context.compaction import HistorySummary
+from src.hooks import HookRegistry, build_default_hook_registry
 from src.permissions import PermissionEngine, build_permission_engine
 from src.runtime.paths import AGENT_CODE_ROOT, get_default_workspace_root
 from src.runtime.tracing import LocalTraceLogger, build_trace_logger
@@ -28,16 +29,19 @@ _FILE_MENTION_RE = re.compile(r"@\S+")
 
 
 def _utc_now() -> str:
+    """处理utc now，支撑 CLI 会话 流程。"""
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _build_default_session_name() -> str:
     # 默认名只承担“先能识别这个会话”的职责，不让 session 一开始就是空标题。
+    """构建default session name，供 CLI 会话 流程复用。"""
     return f"未命名会话 {datetime.now().strftime('%Y-%m-%d %H:%M')}"
 
 
 def _build_session_name_from_user_input(user_input: str) -> str | None:
     # 第一条有效用户输入只做一个很薄的标题裁剪，不额外调用模型。
+    """构建session name from user input，供 CLI 会话 流程复用。"""
     text = _FILE_MENTION_RE.sub("", user_input).strip()
     if not text:
         return None
@@ -46,14 +50,17 @@ def _build_session_name_from_user_input(user_input: str) -> str | None:
 
 
 def _default_session_root() -> Path:
+    """处理default session root，支撑 CLI 会话 流程。"""
     return DEFAULT_SESSION_ROOT
 
 
 def _default_workspace_root() -> Path:
+    """处理default workspace root，支撑 CLI 会话 流程。"""
     return get_default_workspace_root()
 
 
 def _session_pointer_path(session_root: Path) -> Path:
+    """处理session pointer path，支撑 CLI 会话 流程。"""
     return session_root / "current_session.json"
 
 
@@ -67,6 +74,7 @@ class SessionMeta:
     default_name: bool = True
 
     def as_dict(self) -> dict[str, str | bool]:
+        """把当前对象转换成可序列化的字典。"""
         return {
             "session_id": self.session_id,
             "name": self.name,
@@ -135,6 +143,7 @@ class ToolRuntimeContext:
     trace_logger: LocalTraceLogger | None = None
     active_trace_run_id: str | None = None
     permission_engine: PermissionEngine = field(default_factory=PermissionEngine)
+    hook_registry: HookRegistry = field(default_factory=build_default_hook_registry)
     background_notifications: list[dict[str, object]] = field(default_factory=list)
     background_notification_lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -146,6 +155,7 @@ class ToolRuntimeContext:
         file_size_bytes: int,
     ) -> None:
         # 先按路径去重，再把最新快照移到末尾，形成一个最小 LRU。
+        """记录ToolRuntimeContext 的read snapshot，供 CLI 会话 流程复用。"""
         if path in self.read_snapshots:
             self.read_snapshots.pop(path)
         self.read_snapshots[path] = ReadSnapshot(
@@ -158,6 +168,7 @@ class ToolRuntimeContext:
 
     def set_execution_root(self, execution_root: Path) -> None:
         # execution_root 变化时，把旧目录的读快照清掉，避免把另一个 worktree 的版本继续当成当前锁。
+        """设置ToolRuntimeContext 的execution root，供 CLI 会话 流程复用。"""
         resolved_root = execution_root.resolve()
         if resolved_root == self.execution_root:
             return
@@ -165,6 +176,7 @@ class ToolRuntimeContext:
         self.read_snapshots.clear()
 
     def get_read_snapshot(self, path: str) -> ReadSnapshot | None:
+        """获取ToolRuntimeContext 的read snapshot，供 CLI 会话 流程复用。"""
         snapshot = self.read_snapshots.get(path)
         if snapshot is None:
             return None
@@ -175,6 +187,7 @@ class ToolRuntimeContext:
 
     def set_todo_state(self, summary: str, todos: list[dict[str, str]], recap: str) -> None:
         # 这里保存的是“当前 todo 视图”，后续可直接用于 prompt 注入或 UI 展示。
+        """设置ToolRuntimeContext 的todo state，供 CLI 会话 流程复用。"""
         self.todo_state = TodoState(
             summary=summary,
             todos=[
@@ -186,14 +199,17 @@ class ToolRuntimeContext:
 
     def clear_todo_persist_fingerprint(self) -> None:
         # 只要重新进入未完成态，就允许下一次完整完成时再次归档。
+        """清理ToolRuntimeContext 的todo persist fingerprint，供 CLI 会话 流程复用。"""
         self.last_persisted_todo_fingerprint = None
 
     def get_todo_archive_path(self) -> Path:
+        """获取ToolRuntimeContext 的todo archive path，供 CLI 会话 流程复用。"""
         if self.todo_archive_path is None:
             self.todo_archive_path = self.todo_persist_dir / f"todo-session-{self.session_id}.md"
         return self.todo_archive_path
 
     def mark_todo_persisted(self, fingerprint: str, archive_path: Path) -> None:
+        """标记ToolRuntimeContext 的todo persisted，供 CLI 会话 流程复用。"""
         self.todo_archive_path = archive_path
         self.last_persisted_todo_fingerprint = fingerprint
         self.todo_completed_block_count += 1
@@ -205,21 +221,25 @@ class ToolRuntimeContext:
         archive_path: str | None,
     ) -> None:
         # 这份结构化 summary 供后续 L3 上下文直接复用，不再重复从文本里反解析。
+        """记录ToolRuntimeContext 的history summary，供 CLI 会话 流程复用。"""
         self.history_summary = summary
         self.history_compaction_archive_path = archive_path
 
     def enqueue_background_notification(self, *, task_id: int, text: str) -> None:
         # 后台线程和主线程会并发读写这一队列，所以这里统一加锁。
+        """加入队列ToolRuntimeContext 的background notification，供 CLI 会话 流程复用。"""
         with self.background_notification_lock:
             self.background_notifications.append({"task_id": task_id, "text": text})
 
     def drain_background_notifications(self) -> list[dict[str, object]]:
+        """取出并清空ToolRuntimeContext 的background notifications，供 CLI 会话 流程复用。"""
         with self.background_notification_lock:
             notifications = list(self.background_notifications)
             self.background_notifications.clear()
         return notifications
 
     def start_trace_run(self, *, user_input: str, model: str) -> str | None:
+        """启动ToolRuntimeContext 的trace run，供 CLI 会话 流程复用。"""
         if self.trace_logger is None:
             self.active_trace_run_id = None
             return None
@@ -231,6 +251,7 @@ class ToolRuntimeContext:
 
     def log_trace_context_build(self, payload: dict[str, object]) -> None:
         # context_build 只记录“这一轮送给模型前的关键治理信息”，不把整段上下文全文重写进 trace。
+        """处理ToolRuntimeContext 的log trace context build，支撑 CLI 会话 流程。"""
         if self.trace_logger is None or self.active_trace_run_id is None:
             return
         self.trace_logger.log_context_build(
@@ -239,6 +260,7 @@ class ToolRuntimeContext:
         )
 
     def log_trace_tool_call(self, *, tool_name: str, args: dict[str, object]) -> None:
+        """处理ToolRuntimeContext 的log trace tool call，支撑 CLI 会话 流程。"""
         if self.trace_logger is None or self.active_trace_run_id is None:
             return
         self.trace_logger.log_tool_call(
@@ -248,6 +270,7 @@ class ToolRuntimeContext:
         )
 
     def log_trace_tool_result(self, *, tool_name: str, result: dict[str, object]) -> None:
+        """处理ToolRuntimeContext 的log trace tool result，支撑 CLI 会话 流程。"""
         if self.trace_logger is None or self.active_trace_run_id is None:
             return
         self.trace_logger.log_tool_result(
@@ -264,6 +287,7 @@ class ToolRuntimeContext:
             )
 
     def log_trace_error(self, *, stage: str, message: str, **payload: object) -> None:
+        """处理ToolRuntimeContext 的log trace error，支撑 CLI 会话 流程。"""
         if self.trace_logger is None:
             return
         self.trace_logger.log_error(
@@ -280,6 +304,7 @@ class ToolRuntimeContext:
         usage: dict[str, int] | None,
         status: str = "success",
     ) -> None:
+        """完成ToolRuntimeContext 的trace run，供 CLI 会话 流程复用。"""
         if self.trace_logger is None or self.active_trace_run_id is None:
             self.active_trace_run_id = None
             return
@@ -296,6 +321,7 @@ class ToolRuntimeContext:
         self.active_trace_run_id = None
 
     def close_trace_session(self) -> None:
+        """关闭ToolRuntimeContext 的trace session，供 CLI 会话 流程复用。"""
         if self.trace_logger is None:
             return
         self.trace_logger.log_session_summary()
@@ -314,10 +340,12 @@ class CliSessionRuntime:
 
     @property
     def session_name(self) -> str:
+        """返回当前 CLI 会话名称。"""
         return self.meta.name
 
     def update_name_from_user_input(self, user_input: str) -> None:
         # 第一条有效用户输入到来后，再把默认标题改成一个简短可识别的名字。
+        """更新CliSessionRuntime 的name from user input，供 CLI 会话 流程复用。"""
         self.meta.last_active_at = _utc_now()
         if self.meta.default_name:
             derived_name = _build_session_name_from_user_input(user_input)
@@ -328,6 +356,7 @@ class CliSessionRuntime:
         _save_session_meta(self.meta_path, self.meta)
 
     def close(self) -> None:
+        """关闭当前对象持有的后台资源。"""
         if self.context.team_runtime is not None:
             self.context.team_runtime.close()
         self.context.close_trace_session()
@@ -335,6 +364,7 @@ class CliSessionRuntime:
 
 
 def _load_session_meta(meta_path: Path, *, session_id: str) -> SessionMeta:
+    """加载session meta，供 CLI 会话 流程复用。"""
     if not meta_path.exists():
         now = _utc_now()
         return SessionMeta(
@@ -358,6 +388,7 @@ def _load_session_meta(meta_path: Path, *, session_id: str) -> SessionMeta:
 
 
 def _save_session_meta(meta_path: Path, meta: SessionMeta) -> None:
+    """保存session meta，供 CLI 会话 流程复用。"""
     meta_path.parent.mkdir(parents=True, exist_ok=True)
     meta_path.write_text(
         json.dumps(meta.as_dict(), ensure_ascii=False, indent=2),
@@ -366,6 +397,7 @@ def _save_session_meta(meta_path: Path, meta: SessionMeta) -> None:
 
 
 def _write_current_session_pointer(pointer_path: Path, session_id: str) -> None:
+    """写入current session pointer，供 CLI 会话 流程复用。"""
     pointer_path.parent.mkdir(parents=True, exist_ok=True)
     pointer_path.write_text(
         json.dumps({"session_id": session_id}, ensure_ascii=False, indent=2),
@@ -374,6 +406,7 @@ def _write_current_session_pointer(pointer_path: Path, session_id: str) -> None:
 
 
 def _read_current_session_pointer(pointer_path: Path) -> str | None:
+    """读取current session pointer，供 CLI 会话 流程复用。"""
     if not pointer_path.exists():
         return None
     raw = json.loads(pointer_path.read_text(encoding="utf-8"))
@@ -382,6 +415,7 @@ def _read_current_session_pointer(pointer_path: Path) -> str | None:
 
 
 def list_saved_sessions(*, session_root: Path | None = None) -> list[SessionMeta]:
+    """列出saved sessions，供 CLI 会话 流程复用。"""
     active_root = session_root or _default_session_root()
     if not active_root.exists():
         return []
@@ -408,6 +442,7 @@ def build_cli_session_runtime(
     trace_enabled: bool | None = None,
 ) -> CliSessionRuntime:
     # 第一版先把“启动时恢复/选择 session”做好，不做运行中的 session 切换。
+    """构建cli session runtime，供 CLI 会话 流程复用。"""
     active_root = session_root or _default_session_root()
     active_root.mkdir(parents=True, exist_ok=True)
     pointer_path = _session_pointer_path(active_root)

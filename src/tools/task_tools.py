@@ -20,6 +20,7 @@ from src.tools.common import (
 
 
 def _require_runtime_context(runtime_context: ToolRuntimeContext | None) -> ToolRuntimeContext:
+    """处理require runtime context，支撑 任务工具 流程。"""
     if runtime_context is None or runtime_context.session is None:
         raise ToolFailure(
             code="NO_SESSION",
@@ -41,6 +42,7 @@ def task_create(
     runtime_context: ToolRuntimeContext | None = None,
 ) -> ToolResponse:
     # 任务创建只负责落盘一份最小任务对象，不在这里顺手执行任务。
+    """处理task create，支撑 任务工具 流程。"""
     start_time = start_timer()
     params_input = {
         "title": title,
@@ -94,6 +96,7 @@ def task_update(
     error: str | None = None,
     runtime_context: ToolRuntimeContext | None = None,
 ) -> ToolResponse:
+    """处理task update，支撑 任务工具 流程。"""
     start_time = start_timer()
     params_input = {
         "task_id": task_id,
@@ -165,6 +168,7 @@ def task_update(
 
 
 def task_list(*, runtime_context: ToolRuntimeContext | None = None) -> ToolResponse:
+    """处理task list，支撑 任务工具 流程。"""
     start_time = start_timer()
     params_input: dict[str, object] = {}
     try:
@@ -203,6 +207,7 @@ def task_list(*, runtime_context: ToolRuntimeContext | None = None) -> ToolRespo
 
 
 def task_get(*, task_id: int, runtime_context: ToolRuntimeContext | None = None) -> ToolResponse:
+    """处理task get，支撑 任务工具 流程。"""
     start_time = start_timer()
     params_input = {"task_id": task_id}
     try:
@@ -251,6 +256,7 @@ async def task_run(
     runtime_context: ToolRuntimeContext | None = None,
 ) -> ToolResponse:
     # TaskRun 可以直接运行已有任务，也可以在缺省时先创建一个分析任务。
+    """处理task run，支撑 任务工具 流程。"""
     start_time = start_timer()
     params_input = {
         "task_id": task_id,
@@ -317,6 +323,7 @@ def background_run(
     title: str | None = None,
     runtime_context: ToolRuntimeContext | None = None,
 ) -> ToolResponse:
+    """处理background run，支撑 任务工具 流程。"""
     start_time = start_timer()
     params_input = {
         "command": command,
@@ -357,6 +364,7 @@ def _task_create_tool(
     subagent_type: str | None = None,
     model_route: str | None = None,
 ) -> ToolResponse:
+    """处理task create tool，支撑 任务工具 流程。"""
     params_input = {
         "title": title,
         "summary": summary,
@@ -392,6 +400,7 @@ def _task_update_tool(
     result_artifact: str | None = None,
     error: str | None = None,
 ) -> ToolResponse:
+    """处理task update tool，支撑 任务工具 流程。"""
     params_input = {
         "task_id": task_id,
         "status": status,
@@ -421,6 +430,7 @@ def _task_update_tool(
 
 
 def _task_list_tool(ctx: RunContextWrapper[ToolRuntimeContext]) -> ToolResponse:
+    """处理task list tool，支撑 任务工具 流程。"""
     return run_traced_tool(
         ctx.context,
         tool_name="TaskList",
@@ -430,6 +440,7 @@ def _task_list_tool(ctx: RunContextWrapper[ToolRuntimeContext]) -> ToolResponse:
 
 
 def _task_get_tool(ctx: RunContextWrapper[ToolRuntimeContext], task_id: int) -> ToolResponse:
+    """处理task get tool，支撑 任务工具 流程。"""
     params_input = {"task_id": task_id}
     return run_traced_tool(
         ctx.context,
@@ -448,6 +459,7 @@ async def _task_run_tool(
     subagent_type: str = "general",
     model_route: str = "light",
 ) -> ToolResponse:
+    """处理task run tool，支撑 任务工具 流程。"""
     params_input = {
         "task_id": task_id,
         "title": title,
@@ -477,6 +489,7 @@ def _background_run_tool(
     command: str,
     title: str | None = None,
 ) -> ToolResponse:
+    """处理background run tool，支撑 任务工具 流程。"""
     params_input = {
         "command": command,
         "title": title,

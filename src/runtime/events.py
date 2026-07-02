@@ -14,6 +14,7 @@ class RuntimeEventBuilder:
     seq: int = 0
 
     def build(self, event_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """构建RuntimeEventBuilder 的运行事件，供 运行事件 流程复用。"""
         self.seq += 1
         return {
             "event_id": f"evt-{uuid4().hex[:12]}",
@@ -28,6 +29,7 @@ class RuntimeEventBuilder:
 
 def summarize_tool_call(item: Any) -> dict[str, Any]:
     # SDK 的 tool call item 类型很多，这里只抽 UI 需要的最小公共字段。
+    """摘要化tool call，供 运行事件 流程复用。"""
     raw_item = getattr(item, "raw_item", None)
     tool_name = _extract_tool_name(raw_item) or "unknown_tool"
     arguments = _extract_tool_arguments(raw_item)
@@ -40,6 +42,7 @@ def summarize_tool_call(item: Any) -> dict[str, Any]:
 
 def summarize_tool_result(item: Any) -> dict[str, Any]:
     # UI 默认只展示摘要，但事件层仍保留完整 result，后续 detail 面板可直接复用。
+    """摘要化tool result，供 运行事件 流程复用。"""
     output = getattr(item, "output", None)
     tool_name = _extract_tool_name(getattr(item, "raw_item", None)) or "unknown_tool"
     status = "success"
@@ -70,6 +73,7 @@ def summarize_tool_result(item: Any) -> dict[str, Any]:
 
 
 def _extract_tool_name(raw_item: Any) -> str | None:
+    """提取tool name，供 运行事件 流程复用。"""
     if isinstance(raw_item, dict):
         name = raw_item.get("name") or raw_item.get("tool_name")
         return str(name) if name else None
@@ -78,6 +82,7 @@ def _extract_tool_name(raw_item: Any) -> str | None:
 
 
 def _extract_tool_arguments(raw_item: Any) -> str:
+    """提取tool arguments，供 运行事件 流程复用。"""
     if isinstance(raw_item, dict):
         return _short_text(str(raw_item.get("arguments") or "")).strip()
     arguments = getattr(raw_item, "arguments", None)
@@ -86,6 +91,7 @@ def _extract_tool_arguments(raw_item: Any) -> str:
 
 def _short_text(text: str, *, limit: int = 120) -> str:
     # 事件层的摘要默认只保留一小段，避免 tool_result 把 CLI/TUI 直接刷屏。
+    """处理short text，支撑 运行事件 流程。"""
     normalized = " ".join(text.split())
     if len(normalized) <= limit:
         return normalized

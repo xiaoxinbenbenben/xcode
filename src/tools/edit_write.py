@@ -28,12 +28,14 @@ from src.tools.common import (
 
 def _memory_allow_roots(runtime_context: ToolRuntimeContext | None) -> tuple[Path, ...]:
     # 长期记忆目录绑定 workspace_root，不能跟着 execution_root 的 worktree 切换而漂移。
+    """处理memory allow roots，支撑 编辑写入工具 流程。"""
     if runtime_context is None:
         return get_workspace_memory_allow_roots()
     return get_workspace_memory_allow_roots(workspace_root=runtime_context.workspace_root)
 
 
 def _ensure_existing_text_file(path: str) -> WorkspacePath:
+    """确保existing text file，供 编辑写入工具 流程复用。"""
     workspace_path = resolve_workspace_path(path)
     ensure_exists(workspace_path)
     if workspace_path.resolved.is_dir():
@@ -47,6 +49,7 @@ def _ensure_existing_text_file(path: str) -> WorkspacePath:
 
 def _load_editable_text(workspace_path: WorkspacePath) -> str:
     # Read 允许 replace 回退继续看上下文，但真正写入前要更保守，避免把损坏字符静默写回磁盘。
+    """加载editable text，供 编辑写入工具 流程复用。"""
     content, _encoding, fallback_encoding = read_workspace_text_file(workspace_path)
     if fallback_encoding is not None:
         raise ToolFailure(
@@ -59,6 +62,7 @@ def _load_editable_text(workspace_path: WorkspacePath) -> str:
 
 def _write_text_file(path: Path, content: str) -> int:
     # 新文件允许自动创建父目录；这样 Write 可以直接承担“最小创建文件”能力。
+    """写入text file，供 编辑写入工具 流程复用。"""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     return len(content.encode("utf-8"))
@@ -72,6 +76,7 @@ def _resolve_expected_lock(
     expected_size_bytes: int | None,
 ) -> tuple[int | None, int | None]:
     # 显式参数始终优先；只有调用方没传时，才尝试复用同一路径最近一次 Read 的快照。
+    """解析expected lock，供 编辑写入工具 流程复用。"""
     if expected_mtime_ms is not None and expected_size_bytes is not None:
         return expected_mtime_ms, expected_size_bytes
     if runtime_context is None:
@@ -89,6 +94,7 @@ def _remember_written_snapshot(
     *,
     runtime_context: ToolRuntimeContext | None,
 ) -> None:
+    """记录written snapshot，供 编辑写入工具 流程复用。"""
     if runtime_context is None:
         return
 
@@ -349,6 +355,7 @@ def _edit_file_tool(
     old_string: str,
     new_string: str,
 ) -> ToolResponse:
+    """处理edit file tool，支撑 编辑写入工具 流程。"""
     params_input = {
         "path": path,
         "old_string": old_string,
@@ -372,6 +379,7 @@ def _write_file_tool(
     path: str,
     content: str,
 ) -> ToolResponse:
+    """写入file tool，供 编辑写入工具 流程复用。"""
     params_input = {
         "path": path,
         "content": content,

@@ -10,19 +10,23 @@ from src.tools.common import ToolFailure
 
 
 def _worktrees_dir(runtime_context: ToolRuntimeContext) -> Path:
+    """处理worktrees dir，支撑 任务 worktree 流程。"""
     return runtime_context.session_dir / "worktrees"
 
 
 def _task_worktree_name(task_id: int) -> str:
+    """处理task worktree name，支撑 任务 worktree 流程。"""
     return f"task-{task_id}"
 
 
 def _task_worktree_path(runtime_context: ToolRuntimeContext, task_id: int) -> Path:
+    """处理task worktree path，支撑 任务 worktree 流程。"""
     return _worktrees_dir(runtime_context) / f"task_{task_id}"
 
 
 def _run_git_worktree_command(*, args: list[str], cwd: Path) -> None:
     # phase 4 直接复用 git worktree，不额外包一层抽象调度器。
+    """执行git worktree command，供 任务 worktree 流程复用。"""
     completed = subprocess.run(
         args,
         cwd=cwd,
@@ -44,6 +48,7 @@ def ensure_task_worktree(
     task_id: int,
 ) -> dict[str, Any]:
     # 一个任务只绑定一个固定 worktree；如果已存在，就直接复用。
+    """确保task worktree，供 任务 worktree 流程复用。"""
     task = get_task(runtime_context.tasks_dir, task_id)
     worktree_path = _task_worktree_path(runtime_context, task_id)
     worktree_name = _task_worktree_name(task_id)
@@ -65,6 +70,7 @@ def ensure_task_worktree(
 
 def list_worktrees(*, runtime_context: ToolRuntimeContext) -> list[dict[str, Any]]:
     # 先直接从任务图反推 worktree 视图，避免 phase 4 再引入第二份 registry。
+    """列出worktrees，供 任务 worktree 流程复用。"""
     worktrees: list[dict[str, Any]] = []
     for task in list_tasks(runtime_context.tasks_dir):
         worktree_path = task.get("worktree_path")
@@ -89,6 +95,7 @@ def closeout_task_worktree(
     action: str,
 ) -> dict[str, Any]:
     # closeout 只保留 keep/remove 两种决策，不在 phase 4 引入更复杂的审批状态。
+    """处理closeout task worktree，支撑 任务 worktree 流程。"""
     if action not in {"keep", "remove"}:
         raise ToolFailure(
             code="INVALID_PARAM",
