@@ -406,6 +406,7 @@ class AgentTeamRuntime:
             light_model=self.base_context.light_model,
             actor_name=name,
             team_runtime=self,
+            permission_engine=self.base_context.permission_engine,
             trace_logger=None,
         )
 

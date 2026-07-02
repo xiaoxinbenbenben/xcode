@@ -10,6 +10,7 @@ from openai import APIConnectionError
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.shortcuts import confirm
 
 AGENT_CODE_ROOT = Path(__file__).resolve().parent.parent
 HISTORY_PATH = AGENT_CODE_ROOT / "artifacts" / "prompt_history.txt"
@@ -26,6 +27,7 @@ from src.runtime.session import (
     build_cli_session_runtime,
     list_saved_sessions,
 )
+from src.permissions import PermissionRequest, PermissionResult
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -90,6 +92,32 @@ def build_prompt_session() -> PromptSession[str]:
         history=FileHistory(str(HISTORY_PATH)),
         key_bindings=keys,
     )
+
+
+def _summarize_permission_request(request: PermissionRequest) -> str:
+    # 审批提示只展示最关键字段，避免把完整参数或大段内容刷到终端。
+    if request.tool_name in {"Bash", "BackgroundRun"}:
+        command = request.params_input.get("command")
+        return f"{request.tool_name}: {command}"
+    path = request.params_input.get("path")
+    if path is not None:
+        return f"{request.tool_name}: {path}"
+    return f"{request.tool_name}: {json.dumps(request.params_input, ensure_ascii=False)}"
+
+
+def build_cli_approval_callback():
+    def approval_callback(request: PermissionRequest, result: PermissionResult) -> bool:
+        # prompt_toolkit 的 confirm 保持在 CLI 边界，runtime 只依赖 callback 协议。
+        print()
+        print(f"[Permission] {result.reason}")
+        print(f"[Permission] {_summarize_permission_request(request)}")
+        return confirm("Allow this tool call? ")
+
+    return approval_callback
+
+
+def enable_cli_approval(session_runtime: CliSessionRuntime) -> None:
+    session_runtime.context.permission_engine.approval_callback = build_cli_approval_callback()
 
 
 def stream_reply(
@@ -248,6 +276,7 @@ def run_repl(
     except (FileNotFoundError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
+    enable_cli_approval(session_runtime)
     print(f"Session: {session_runtime.session_name} ({session_runtime.session_id})")
     print(f"Workspace: {session_runtime.context.workspace_root}")
     print("Enter 发送 | Esc Enter 换行 | Ctrl-D / Ctrl-C 退出")
@@ -280,77 +309,102 @@ def run_repl(
         session_runtime.close()
 
 
+def resolve_workspace_root_arg(args: argparse.Namespace) -> Path | None:
+    # workspace 参数只做 shell 风格的 ~ 展开；真正 resolve 留给 session runtime 统一处理。
+    return Path(args.workspace_root).expanduser() if args.workspace_root else None
+
+
+def handle_list_sessions() -> int:
+    # session 列表是纯查询模式，不需要创建 SQLiteSession 或加载 runtime context。
+    sessions = list_saved_sessions()
+    if not sessions:
+        print("No saved sessions.")
+        return 0
+    for session in sessions:
+        print(
+            f"{session.session_id}\t{session.name}\t"
+            f"{session.workspace_root}\t{session.last_active_at}"
+        )
+    return 0
+
+
+def handle_print_session_json(args: argparse.Namespace, workspace_root: Path | None) -> int:
+    # TUI 启动时用这条轻量分支拿当前 session 描述，拿完必须立刻关闭 session。
+    try:
+        session_runtime = build_cli_session_runtime(
+            session_id=args.session_id,
+            new_session=args.new_session,
+            workspace_root=workspace_root,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    try:
+        print(json.dumps(build_session_descriptor(session_runtime), ensure_ascii=False))
+        return 0
+    finally:
+        session_runtime.close()
+
+
+def handle_prompt_once(
+    args: argparse.Namespace,
+    config: RuntimeConfig,
+    workspace_root: Path | None,
+) -> int:
+    # 单次 prompt 模式复用完整 session runtime，但只执行一轮，然后关闭并退出进程。
+    try:
+        session_runtime = build_cli_session_runtime(
+            session_id=args.session_id,
+            new_session=args.new_session,
+            workspace_root=workspace_root,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    try:
+        user_input = args.prompt.strip()
+        if not user_input:
+            print("No input provided.", file=sys.stderr)
+            return 1
+        try:
+            if args.json_events:
+                session_runtime.update_name_from_user_input(user_input)
+                asyncio.run(
+                    emit_runtime_events_json(
+                        user_input,
+                        config,
+                        session_runtime,
+                        write=lambda text: print(text, end="", flush=True),
+                    )
+                )
+            else:
+                enable_cli_approval(session_runtime)
+                stream_reply(user_input, config, session_runtime)
+        except APIConnectionError:
+            print_connection_error()
+            return 1
+        return 0
+    finally:
+        session_runtime.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    workspace_root = Path(args.workspace_root).expanduser() if args.workspace_root else None
+    workspace_root = resolve_workspace_root_arg(args)
 
     config = load_runtime_config()
+    # main 只负责选择 CLI 运行模式；每个模式的细节交给对应 handler。
     if args.json_events and args.prompt is None:
         print("`--json-events` 只能和单次 prompt 一起使用。", file=sys.stderr)
         return 2
     if args.list_sessions:
-        sessions = list_saved_sessions()
-        if not sessions:
-            print("No saved sessions.")
-            return 0
-        for session in sessions:
-            print(
-                f"{session.session_id}\t{session.name}\t"
-                f"{session.workspace_root}\t{session.last_active_at}"
-            )
-        return 0
-
+        return handle_list_sessions()
     if args.print_session_json:
-        try:
-            session_runtime = build_cli_session_runtime(
-                session_id=args.session_id,
-                new_session=args.new_session,
-                workspace_root=workspace_root,
-            )
-        except (FileNotFoundError, ValueError) as exc:
-            print(str(exc), file=sys.stderr)
-            return 1
-        try:
-            print(json.dumps(build_session_descriptor(session_runtime), ensure_ascii=False))
-            return 0
-        finally:
-            session_runtime.close()
-
+        return handle_print_session_json(args, workspace_root)
     if args.prompt is not None:
-        try:
-            session_runtime = build_cli_session_runtime(
-                session_id=args.session_id,
-                new_session=args.new_session,
-                workspace_root=workspace_root,
-            )
-        except (FileNotFoundError, ValueError) as exc:
-            print(str(exc), file=sys.stderr)
-            return 1
-        try:
-            user_input = args.prompt.strip()
-            if not user_input:
-                print("No input provided.", file=sys.stderr)
-                return 1
-            try:
-                if args.json_events:
-                    session_runtime.update_name_from_user_input(user_input)
-                    asyncio.run(
-                        emit_runtime_events_json(
-                            user_input,
-                            config,
-                            session_runtime,
-                            write=lambda text: print(text, end="", flush=True),
-                        )
-                    )
-                else:
-                    stream_reply(user_input, config, session_runtime)
-            except APIConnectionError:
-                print_connection_error()
-                return 1
-            return 0
-        finally:
-            session_runtime.close()
+        return handle_prompt_once(args, config, workspace_root)
 
+    # 默认进入多轮交互模式，session runtime 会在 REPL 内持续复用。
     return run_repl(
         config,
         session_id=args.session_id,

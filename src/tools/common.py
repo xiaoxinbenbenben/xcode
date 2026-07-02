@@ -11,6 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 from src.protocol import ToolResponse, error_response
+from src.permissions import PermissionDecision, PermissionRequest, PermissionResult
 from src.runtime.paths import display_path, get_default_workspace_root, get_workspace_memory_dir
 
 # 这层只放所有本地工具共享的基础能力：
@@ -171,6 +172,68 @@ def error_from_failure(
     )
 
 
+def _build_permission_request(
+    runtime_context: Any,
+    *,
+    tool_name: str,
+    params_input: dict[str, Any],
+) -> PermissionRequest:
+    # actor_name 让后续 CLI、TUI、teammate trace 都能知道是谁发起了这次申请。
+    actor_name = getattr(runtime_context, "actor_name", "team-lead")
+    return PermissionRequest(
+        tool_name=tool_name,
+        params_input=params_input,
+        actor_name=str(actor_name or "team-lead"),
+    )
+
+
+def _authorize_tool_call(
+    runtime_context: Any,
+    *,
+    tool_name: str,
+    params_input: dict[str, Any],
+) -> PermissionResult | None:
+    # 没有 runtime context 的直接函数调用保持原有语义；CLI/TUI 正常运行都会带 context。
+    if runtime_context is None:
+        return None
+    permission_engine = getattr(runtime_context, "permission_engine", None)
+    if permission_engine is None:
+        return None
+
+    request = _build_permission_request(
+        runtime_context,
+        tool_name=tool_name,
+        params_input=params_input,
+    )
+    result = permission_engine.authorize(request)
+    if result.decision == PermissionDecision.ALLOW:
+        return None
+    return result
+
+
+def _permission_denied_response(
+    *,
+    tool_name: str,
+    params_input: dict[str, Any],
+    permission_result: PermissionResult,
+) -> ToolResponse:
+    return error_response(
+        code=permission_result.code,
+        message=permission_result.reason,
+        text=f"工具调用被权限系统拒绝：{tool_name}。{permission_result.reason}",
+        stats={"time_ms": 0},
+        context=build_context(params_input=params_input, cwd="."),
+        data={
+            "tool_name": tool_name,
+            "permission": {
+                "decision": permission_result.decision.value,
+                "source": permission_result.source,
+                "reason": permission_result.reason,
+            },
+        },
+    )
+
+
 def run_traced_tool(
     runtime_context: Any,
     *,
@@ -185,6 +248,23 @@ def run_traced_tool(
             tool_name=tool_name,
             args=params_input,
         )
+    permission_result = _authorize_tool_call(
+        runtime_context,
+        tool_name=tool_name,
+        params_input=params_input,
+    )
+    if permission_result is not None:
+        result = _permission_denied_response(
+            tool_name=tool_name,
+            params_input=params_input,
+            permission_result=permission_result,
+        )
+        if runtime_context is not None:
+            runtime_context.log_trace_tool_result(
+                tool_name=tool_name,
+                result=result,
+            )
+        return result
     result = invoke()
     if runtime_context is not None:
         runtime_context.log_trace_tool_result(
@@ -207,6 +287,23 @@ async def run_traced_tool_async(
             tool_name=tool_name,
             args=params_input,
         )
+    permission_result = _authorize_tool_call(
+        runtime_context,
+        tool_name=tool_name,
+        params_input=params_input,
+    )
+    if permission_result is not None:
+        result = _permission_denied_response(
+            tool_name=tool_name,
+            params_input=params_input,
+            permission_result=permission_result,
+        )
+        if runtime_context is not None:
+            runtime_context.log_trace_tool_result(
+                tool_name=tool_name,
+                result=result,
+            )
+        return result
     result = await invoke()
     if runtime_context is not None:
         runtime_context.log_trace_tool_result(

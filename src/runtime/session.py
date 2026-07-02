@@ -13,6 +13,7 @@ from uuid import uuid4
 from agents import SQLiteSession
 
 from src.context.compaction import HistorySummary
+from src.permissions import PermissionEngine, build_permission_engine
 from src.runtime.paths import AGENT_CODE_ROOT, get_default_workspace_root
 from src.runtime.tracing import LocalTraceLogger, build_trace_logger
 
@@ -133,6 +134,7 @@ class ToolRuntimeContext:
     history_compaction_archive_path: str | None = None
     trace_logger: LocalTraceLogger | None = None
     active_trace_run_id: str | None = None
+    permission_engine: PermissionEngine = field(default_factory=PermissionEngine)
     background_notifications: list[dict[str, object]] = field(default_factory=list)
     background_notification_lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -463,6 +465,7 @@ def build_cli_session_runtime(
         workspace_root=resolved_workspace_root,
         execution_root=resolved_workspace_root,
         team_dir=team_dir,
+        permission_engine=build_permission_engine(workspace_root=resolved_workspace_root),
         trace_logger=build_trace_logger(
             active_session_id,
             trace_dir=traces_dir,
