@@ -21,6 +21,7 @@ class FileMentionPreprocessResult:
 
 def _resolve_existing_workspace_file(raw_path: str, *, workspace_root: Path | None = None) -> str | None:
     # 当前只接受项目内相对路径，并且只提醒真实存在的文件。
+    """解析existing workspace file，供 文件提及预处理 流程复用。"""
     active_root = (workspace_root or get_default_workspace_root()).resolve()
     candidate = Path(raw_path)
     if candidate.is_absolute():
@@ -43,6 +44,7 @@ def extract_file_mentions(
     workspace_root: Path | None = None,
 ) -> tuple[list[str], int]:
     # 这里按出现顺序去重，再在最后统一做数量上限，避免重复路径反复污染 reminder。
+    """提取file mentions，供 文件提及预处理 流程复用。"""
     seen: set[str] = set()
     ordered_mentions: list[str] = []
     for match in FILE_MENTION_PATTERN.finditer(user_input):
@@ -62,6 +64,7 @@ def extract_file_mentions(
 
 def build_file_mention_reminder(mentioned_files: list[str], *, omitted_count: int = 0) -> str:
     # reminder 只保留最小动作信息：用户提到了哪些文件、回答前要先 Read、不要假设内容。
+    """构建file mention reminder，供 文件提及预处理 流程复用。"""
     mention_text = ", ".join(f"@{path}" for path in mentioned_files)
     lines = [
         "<system-reminder>",
@@ -81,6 +84,7 @@ def preprocess_user_input(
     workspace_root: Path | None = None,
 ) -> FileMentionPreprocessResult:
     # 用户原文保持不变；系统只是在前面额外插入一个最小 reminder item。
+    """预处理user input，供 文件提及预处理 流程复用。"""
     mentioned_files, omitted_count = extract_file_mentions(
         user_input,
         workspace_root=workspace_root,

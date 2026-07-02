@@ -29,10 +29,12 @@ TEAM_TASK_LEASE_SECONDS = 30
 
 
 def _utc_now() -> str:
+    """处理utc now，支撑 团队运行时 流程。"""
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _build_default_team_state(*, session_id: str, session_name: str) -> dict[str, object]:
+    """构建default team state，供 团队运行时 流程复用。"""
     now = _utc_now()
     # team_id 直接稳定绑定 session，Phase 1 不再额外设计独立 team 命名策略。
     return {
@@ -48,6 +50,7 @@ def _build_default_team_state(*, session_id: str, session_name: str) -> dict[str
 
 def _normalize_member_status(member: dict[str, object]) -> bool:
     # Phase 1 的 teammate 只活在当前进程里，重启后要把旧活动状态诚实改成 stopped。
+    """规范化member status，供 团队运行时 流程复用。"""
     status = str(member.get("status") or "")
     if status in {"spawning", "working", "idle", "stopping"}:
         member["status"] = "stopped"
@@ -61,6 +64,7 @@ def _build_transcript_event(
     payload: dict[str, object],
 ) -> dict[str, object]:
     # transcript 先只保留调试和回放必需字段，不在 Phase 1 里做复杂 span 结构。
+    """构建transcript event，供 团队运行时 流程复用。"""
     return {
         "event_type": event_type,
         "created_at": _utc_now(),
@@ -71,6 +75,7 @@ def _build_transcript_event(
 def _write_json_file(path: Path, payload: dict[str, object]) -> None:
     # team_state 和 request_tracker 会被多线程快速读写。
     # 这里用同目录临时文件再 replace，避免读到半截 JSON。
+    """写入json file，供 团队运行时 流程复用。"""
     temp_path = path.with_name(f"{path.name}.tmp")
     temp_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
@@ -81,6 +86,7 @@ def _write_json_file(path: Path, payload: dict[str, object]) -> None:
 
 def _build_message_input(message: dict[str, object]) -> dict[str, str]:
     # teammate 收到消息后，把结构化信封压成一条 user/message 视图送给模型。
+    """构建message input，供 团队运行时 流程复用。"""
     parts = [
         f"来自 {message['from']} 的团队消息",
         f"type: {message['type']}",
@@ -106,6 +112,7 @@ def _build_message_input(message: dict[str, object]) -> dict[str, str]:
 
 def _build_task_input(task: dict[str, object]) -> dict[str, str]:
     # task_assignment 不走普通消息摘要，而是直接告诉 teammate 当前认领到的任务。
+    """构建task input，供 团队运行时 流程复用。"""
     parts = [
         "你刚刚认领到了一个任务。",
         "type: task_assignment",
@@ -132,6 +139,7 @@ def _build_teammate_identity_input(
 ) -> dict[str, str]:
     # 这层 stable reinjection 用来告诉 teammate“我是谁、当前归属什么任务”。
     # 它不依赖历史 transcript，所以不会被 compact 吞掉。
+    """构建teammate identity input，供 团队运行时 流程复用。"""
     current_task_text = str(current_task_id) if current_task_id is not None else "none"
     content = "\n".join(
         [
@@ -154,6 +162,7 @@ def _build_teammate_identity_input(
 
 def _build_teammate_instructions(*, name: str, role: str, prompt: str) -> str:
     # teammate 的 prompt 只解释身份和协作方式，不把主代理的整套 L1 再复制一遍。
+    """构建teammate instructions，供 团队运行时 流程复用。"""
     sections = [
         f"You are teammate '{name}'.",
         f"Your role is: {role}.",
@@ -173,6 +182,7 @@ def _build_teammate_instructions(*, name: str, role: str, prompt: str) -> str:
 
 def _build_teammate_tools():
     # teammate 工具集先复用现有工作工具，再补最小 team phase 2 工具。
+    """构建teammate tools，供 团队运行时 流程复用。"""
     from src.tools.team_tools import (
         claim_task_tool,
         idle_tool,
@@ -221,6 +231,7 @@ class AgentTeamRuntime:
         base_context: ToolRuntimeContext,
     ) -> None:
         # team runtime 绑定到一个 session，下层所有 teammate 都共享这套根目录。
+        """初始化对象需要持有的运行状态。"""
         self.session_id = session_id
         self.session_name = session_name
         self.team_dir = team_dir
@@ -239,6 +250,7 @@ class AgentTeamRuntime:
     def _load_or_create_state(self) -> dict[str, object]:
         # 如果 team_state 已存在，说明这是同一 session 的恢复流程。
         # 这时要把旧进程遗留的活动状态统一收敛成 stopped。
+        """加载AgentTeamRuntime 的or create state，供 团队运行时 流程复用。"""
         self.team_dir.mkdir(parents=True, exist_ok=True)
         if not self.state_path.exists():
             state = _build_default_team_state(
@@ -259,11 +271,13 @@ class AgentTeamRuntime:
 
     def _save_state(self, state: dict[str, object]) -> None:
         # Phase 1 先保持最直接的 JSON 落盘，不额外引入 store 抽象。
+        """保存AgentTeamRuntime 的state，供 团队运行时 流程复用。"""
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         _write_json_file(self.state_path, state)
 
     def _load_or_create_request_tracker(self) -> dict[str, dict[str, object]]:
         # tracker 单独落盘，避免把 team_state 和请求流状态混在同一个文件里。
+        """加载AgentTeamRuntime 的or create request tracker，供 团队运行时 流程复用。"""
         if not self.request_tracker_path.exists():
             self._save_request_tracker({})
             return {}
@@ -271,10 +285,12 @@ class AgentTeamRuntime:
         return {str(key): value for key, value in raw.items()}
 
     def _save_request_tracker(self, tracker: dict[str, dict[str, object]]) -> None:
+        """保存AgentTeamRuntime 的request tracker，供 团队运行时 流程复用。"""
         self.request_tracker_path.parent.mkdir(parents=True, exist_ok=True)
         _write_json_file(self.request_tracker_path, tracker)
 
     def _find_member(self, name: str) -> dict[str, object] | None:
+        """处理AgentTeamRuntime 的find member，支撑 团队运行时 流程。"""
         for member in self._state["members"]:
             if member["name"] == name:
                 return member
@@ -282,6 +298,7 @@ class AgentTeamRuntime:
 
     def _update_member(self, name: str, **updates: object) -> dict[str, object]:
         # 所有状态切换都统一走这一层，避免线程间把 team_state 写散。
+        """更新AgentTeamRuntime 的member，供 团队运行时 流程复用。"""
         with self._lock:
             member = self._find_member(name)
             if member is None:
@@ -314,6 +331,7 @@ class AgentTeamRuntime:
 
     def _append_transcript_event(self, worker: TeammateWorker, event: dict[str, object]) -> None:
         # transcript 用 JSONL 追加，最近镜像单独覆盖，便于后续 UI 快速读取。
+        """处理AgentTeamRuntime 的append transcript event，支撑 团队运行时 流程。"""
         worker.transcript_path.parent.mkdir(parents=True, exist_ok=True)
         with worker.transcript_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(event, ensure_ascii=False) + "\n")
@@ -336,6 +354,7 @@ class AgentTeamRuntime:
         summary: str,
     ) -> dict[str, object]:
         # request tracker 只记录最小配对信息，不重复保存整条消息正文。
+        """创建AgentTeamRuntime 的request record，供 团队运行时 流程复用。"""
         request_id = f"req-{uuid4().hex[:12]}"
         record = {
             "request_id": request_id,
@@ -353,6 +372,7 @@ class AgentTeamRuntime:
         return dict(record)
 
     def get_request_record(self, *, request_id: str) -> dict[str, object]:
+        """获取AgentTeamRuntime 的request record，供 团队运行时 流程复用。"""
         record = self._request_tracker.get(request_id)
         if record is None:
             raise ToolFailure(
@@ -368,6 +388,7 @@ class AgentTeamRuntime:
         request_id: str,
         status: str,
     ) -> dict[str, object]:
+        """解析AgentTeamRuntime 的request record，供 团队运行时 流程复用。"""
         if status not in {"approved", "rejected"}:
             raise ToolFailure(
                 code="INVALID_PARAM",
@@ -389,6 +410,7 @@ class AgentTeamRuntime:
 
     def _build_worker_context(self, *, name: str) -> ToolRuntimeContext:
         # teammate 复用同一 session 目录，但保持独立的运行时上下文和 actor 身份。
+        """构建AgentTeamRuntime 的worker context，供 团队运行时 流程复用。"""
         return ToolRuntimeContext(
             session_id=self.base_context.session_id,
             session_name=self.base_context.session_name,
@@ -406,11 +428,14 @@ class AgentTeamRuntime:
             light_model=self.base_context.light_model,
             actor_name=name,
             team_runtime=self,
+            permission_engine=self.base_context.permission_engine,
+            hook_registry=self.base_context.hook_registry,
             trace_logger=None,
         )
 
     def _claim_task_for_worker(self, worker: TeammateWorker) -> dict[str, object] | None:
         # teammate 空闲时，先尝试从 task board 里拿一条未被阻塞的任务。
+        """领取AgentTeamRuntime 的task for worker，供 团队运行时 流程复用。"""
         claimed_task = claim_persistent_task(
             tasks_dir=self.base_context.tasks_dir,
             owner_agent_id=worker.agent_id,
@@ -439,6 +464,7 @@ class AgentTeamRuntime:
 
     def _renew_task_lease_for_worker(self, worker: TeammateWorker, *, task_id: int) -> dict[str, object]:
         # 当前 teammate 只给自己持有的任务续租，避免别的 worker 篡改执行权。
+        """续租AgentTeamRuntime 的task lease for worker，供 团队运行时 流程复用。"""
         task = renew_task_lease(
             tasks_dir=self.base_context.tasks_dir,
             task_id=task_id,
@@ -459,6 +485,7 @@ class AgentTeamRuntime:
     ) -> dict[str, object]:
         # phase 4 只做最小 worktree 绑定：
         # 需要隔离的任务切到 task 专属 worktree，否则回到 session 的 workspace_root。
+        """处理AgentTeamRuntime 的bind task execution root for worker，支撑 团队运行时 流程。"""
         if task.get("require_worktree"):
             task = ensure_task_worktree(
                 runtime_context=self.base_context,
@@ -498,6 +525,7 @@ class AgentTeamRuntime:
     ) -> dict[str, object]:
         # 如果 teammate 跑完这一轮后任务还停留在自己的 running lease 下，
         # 就把这轮结论直接写回任务图，作为最小 phase 3 闭环。
+        """完成AgentTeamRuntime 的claimed task，供 团队运行时 流程复用。"""
         task = get_task(self.base_context.tasks_dir, task_id)
         if task.get("status") == "running" and task.get("owner_agent_id") == worker.agent_id:
             task = update_task(
@@ -528,6 +556,7 @@ class AgentTeamRuntime:
     def _run_worker_loop(self, worker: TeammateWorker) -> None:
         # teammate 的生命周期是：创建后先进入 working，再立即转成 idle 等待消息。
         # 这能保证它“活着”，但不会在无任务时空转占用太多资源。
+        """执行AgentTeamRuntime 的worker loop，供 团队运行时 流程复用。"""
         self._update_member(worker.name, status="working")
         self._append_transcript_event(
             worker,
@@ -670,6 +699,7 @@ class AgentTeamRuntime:
         )
 
     def spawn_teammate(self, *, name: str, role: str, prompt: str) -> dict[str, object]:
+        """启动AgentTeamRuntime 的teammate，供 团队运行时 流程复用。"""
         with self._lock:
             existing_member = self._find_member(name)
             existing_status = str(existing_member.get("status") or "") if existing_member is not None else ""
@@ -730,6 +760,7 @@ class AgentTeamRuntime:
 
     def list_teammates(self) -> dict[str, object]:
         # 列表接口只返回持久化 member 视图，不暴露线程对象等进程内细节。
+        """列出AgentTeamRuntime 的teammates，供 团队运行时 流程复用。"""
         return {
             "team_id": self._state["team_id"],
             "team_name": self._state["team_name"],
@@ -738,6 +769,7 @@ class AgentTeamRuntime:
 
     def claim_next_task(self, *, actor_name: str) -> dict[str, object]:
         # ClaimTask 只给 teammate 用，lead 不直接参与任务认领。
+        """领取AgentTeamRuntime 的next task，供 团队运行时 流程复用。"""
         worker = self._workers.get(actor_name)
         member = self._find_member(actor_name)
         if worker is None or member is None:
@@ -771,6 +803,7 @@ class AgentTeamRuntime:
         request_status: str | None = None,
     ) -> dict[str, object]:
         # 所有团队消息先统一组装成一份标准信封，再按目标路由到 lead 或 teammate。
+        """发送AgentTeamRuntime 的message，供 团队运行时 流程复用。"""
         message = {
             "message_id": f"msg-{uuid4().hex[:12]}",
             "team_id": self._state["team_id"],
@@ -808,6 +841,7 @@ class AgentTeamRuntime:
         teammate_name: str,
         content: str,
     ) -> dict[str, object]:
+        """处理AgentTeamRuntime 的request shutdown，支撑 团队运行时 流程。"""
         if from_name != "team-lead":
             raise ToolFailure(
                 code="ACCESS_DENIED",
@@ -844,6 +878,7 @@ class AgentTeamRuntime:
         feedback: str | None = None,
     ) -> dict[str, object]:
         # shutdown_response 必须由被请求关闭的 teammate 自己返回。
+        """处理AgentTeamRuntime 的respond shutdown request，支撑 团队运行时 流程。"""
         original_record = self.get_request_record(request_id=request_id)
         if actor_name != str(original_record["to"]):
             raise ToolFailure(
@@ -882,6 +917,7 @@ class AgentTeamRuntime:
         content: str,
         to_name: str = "team-lead",
     ) -> dict[str, object]:
+        """处理AgentTeamRuntime 的request plan review，支撑 团队运行时 流程。"""
         record = self._create_request_record(
             request_type="plan_review_request",
             from_name=actor_name,
@@ -912,6 +948,7 @@ class AgentTeamRuntime:
         feedback: str | None = None,
     ) -> dict[str, object]:
         # plan_review_response 只能由原本被请求审阅的一方给出。
+        """处理AgentTeamRuntime 的respond plan review，支撑 团队运行时 流程。"""
         original_record = self.get_request_record(request_id=request_id)
         if actor_name != str(original_record["to"]):
             raise ToolFailure(
@@ -939,6 +976,7 @@ class AgentTeamRuntime:
 
     def drain_lead_messages(self) -> list[dict[str, object]]:
         # lead 队列只在每轮 build_context 前排空一次，避免重复注入同一批消息。
+        """取出并清空AgentTeamRuntime 的lead messages，供 团队运行时 流程复用。"""
         messages: list[dict[str, object]] = []
         while True:
             try:
@@ -949,6 +987,7 @@ class AgentTeamRuntime:
 
     def drain_teammate_state_changes(self) -> list[dict[str, object]]:
         # teammate 状态变化只给 lead 的 UI/runtime 看，不回注入模型正文。
+        """取出并清空AgentTeamRuntime 的teammate state changes，供 团队运行时 流程复用。"""
         changes: list[dict[str, object]] = []
         while True:
             try:
@@ -959,6 +998,7 @@ class AgentTeamRuntime:
 
     def stop_teammate(self, *, name: str) -> dict[str, object]:
         # stop 只是发出关闭请求，不阻塞等待完整清理结束。
+        """停止AgentTeamRuntime 的teammate，供 团队运行时 流程复用。"""
         worker = self._workers.get(name)
         member = self._find_member(name)
         if worker is None or member is None:
@@ -986,6 +1026,7 @@ class AgentTeamRuntime:
 
     def clear_worktree_binding(self, *, worktree_path: str) -> None:
         # closeout remove 后，把仍指向这个 worktree 的 teammate 状态收回到 workspace_root。
+        """清理AgentTeamRuntime 的worktree binding，供 团队运行时 流程复用。"""
         target_worktree_path = str(Path(worktree_path).resolve())
         for worker in self._workers.values():
             member = self._find_member(worker.name)
@@ -1001,6 +1042,7 @@ class AgentTeamRuntime:
 
     def close(self) -> None:
         # 关闭 session runtime 时，把当前进程里的 teammate 一并停止，避免泄漏后台线程。
+        """关闭当前对象持有的后台资源。"""
         for name in list(self._workers.keys()):
             try:
                 self.stop_teammate(name=name)
@@ -1013,6 +1055,7 @@ class AgentTeamRuntime:
 
 def build_agent_team_runtime(*, runtime_context: ToolRuntimeContext) -> AgentTeamRuntime:
     # team runtime 是 session 级对象，所以这里直接挂在 runtime_context 上复用。
+    """构建agent team runtime，供 团队运行时 流程复用。"""
     return AgentTeamRuntime(
         session_id=runtime_context.session_id,
         session_name=runtime_context.session_name,
@@ -1029,6 +1072,7 @@ def spawn_teammate(
     prompt: str,
 ) -> dict[str, object]:
     # 这些顶层 helper 只做一层薄转发，让 team_tools 和测试不用直接碰 runtime 内部字段。
+    """启动teammate，供 团队运行时 流程复用。"""
     if runtime_context.team_runtime is None:
         raise ToolFailure(
             code="NO_TEAM_RUNTIME",
@@ -1039,6 +1083,7 @@ def spawn_teammate(
 
 
 def list_teammates(runtime_context: ToolRuntimeContext) -> dict[str, object]:
+    """列出teammates，供 团队运行时 流程复用。"""
     if runtime_context.team_runtime is None:
         raise ToolFailure(
             code="NO_TEAM_RUNTIME",
@@ -1058,6 +1103,7 @@ def send_team_message(
 ) -> dict[str, object]:
     # 发送者身份来自当前 context.actor_name。
     # 这样 team-lead 和 teammate 都能复用同一条发送路径。
+    """发送team message，供 团队运行时 流程复用。"""
     if runtime_context.team_runtime is None:
         raise ToolFailure(
             code="NO_TEAM_RUNTIME",
@@ -1079,6 +1125,7 @@ def request_shutdown(
     name: str,
     content: str,
 ) -> dict[str, object]:
+    """处理request shutdown，支撑 团队运行时 流程。"""
     if runtime_context.team_runtime is None:
         raise ToolFailure(
             code="NO_TEAM_RUNTIME",
@@ -1093,6 +1140,7 @@ def request_shutdown(
 
 
 def claim_next_task(runtime_context: ToolRuntimeContext) -> dict[str, object]:
+    """领取next task，供 团队运行时 流程复用。"""
     if runtime_context.team_runtime is None:
         raise ToolFailure(
             code="NO_TEAM_RUNTIME",
@@ -1111,6 +1159,7 @@ def respond_shutdown_request(
     status: str,
     feedback: str | None = None,
 ) -> dict[str, object]:
+    """处理respond shutdown request，支撑 团队运行时 流程。"""
     if runtime_context.team_runtime is None:
         raise ToolFailure(
             code="NO_TEAM_RUNTIME",
@@ -1132,6 +1181,7 @@ def request_plan_review(
     content: str,
     to: str = "team-lead",
 ) -> dict[str, object]:
+    """处理request plan review，支撑 团队运行时 流程。"""
     if runtime_context.team_runtime is None:
         raise ToolFailure(
             code="NO_TEAM_RUNTIME",
@@ -1153,6 +1203,7 @@ def respond_plan_review(
     status: str,
     feedback: str | None = None,
 ) -> dict[str, object]:
+    """处理respond plan review，支撑 团队运行时 流程。"""
     if runtime_context.team_runtime is None:
         raise ToolFailure(
             code="NO_TEAM_RUNTIME",
@@ -1168,6 +1219,7 @@ def respond_plan_review(
 
 
 def get_request_record(runtime_context: ToolRuntimeContext, *, request_id: str) -> dict[str, object]:
+    """获取request record，供 团队运行时 流程复用。"""
     if runtime_context.team_runtime is None:
         raise ToolFailure(
             code="NO_TEAM_RUNTIME",
@@ -1178,6 +1230,7 @@ def get_request_record(runtime_context: ToolRuntimeContext, *, request_id: str) 
 
 
 def stop_teammate(runtime_context: ToolRuntimeContext, *, name: str) -> dict[str, object]:
+    """停止teammate，供 团队运行时 流程复用。"""
     if runtime_context.team_runtime is None:
         raise ToolFailure(
             code="NO_TEAM_RUNTIME",

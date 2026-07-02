@@ -7,6 +7,7 @@ type TimelineItem = {
 	text: string;
 };
 
+/** 测试用：把 assistant 增量追加到指定时间线项。 */
 function appendAssistantDelta(
 	timeline: TimelineItem[],
 	assistantId: string,
@@ -23,6 +24,7 @@ function appendAssistantDelta(
 	});
 }
 
+/** 测试用：在时间线里新增一个 assistant 消息段。 */
 function appendAssistantSegment(
 	timeline: TimelineItem[],
 	assistantId: string,
@@ -54,7 +56,7 @@ test('工具事件打断后，后续 assistant 文本应新开一条消息段', 
 
 	const next = appendAssistantSegment(timeline, 'a2', '最终回答');
 	assert.equal(next[1]?.text, '先思考一下');
-		assert.equal(next[2]?.text, '[Tool] Read');
-		assert.equal(next[3]?.text, '[ToolResult] done');
+	assert.equal(next[2]?.text, '[Tool] Read');
+	assert.equal(next[3]?.text, '[ToolResult] done');
 	assert.equal(next[4]?.text, '最终回答');
 });

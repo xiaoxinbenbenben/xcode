@@ -26,6 +26,7 @@ class SkillMeta:
 
 def _parse_frontmatter(text: str) -> tuple[dict[str, str], str] | None:
     # 当前 skill 格式固定是“frontmatter + markdown 正文”，这里用最小解析就够了。
+    """解析frontmatter，供 技能加载器 流程复用。"""
     if not text.startswith("---\n"):
         return None
 
@@ -47,6 +48,7 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, str], str] | None:
 
 def _expand_skill_arguments(body: str, args: str) -> str:
     # Skills 只做一层轻量参数展开，不在这里引入更复杂的模板系统。
+    """处理expand skill arguments，支撑 技能加载器 流程。"""
     normalized_args = args.strip()
     if "$ARGUMENTS" in body:
         return body.replace("$ARGUMENTS", normalized_args)
@@ -56,6 +58,7 @@ def _expand_skill_arguments(body: str, args: str) -> str:
 
 
 def _normalize_skills_roots(skills_root: Path | Iterable[Path] | None) -> tuple[Path, ...]:
+    """规范化skills roots，供 技能加载器 流程复用。"""
     if skills_root is None:
         return ((get_default_workspace_root() / "skills").resolve(),)
     if isinstance(skills_root, Path):
@@ -65,12 +68,14 @@ def _normalize_skills_roots(skills_root: Path | Iterable[Path] | None) -> tuple[
 
 class SkillLoader:
     def __init__(self, skills_root: Path | Iterable[Path] | None = None) -> None:
+        """初始化对象需要持有的运行状态。"""
         self.skills_roots = _normalize_skills_roots(skills_root)
         self._skills: dict[str, SkillMeta] = {}
         self._last_scan_marker = -1.0
 
     def _compute_scan_marker(self) -> float:
         # mtime 刷新只需要一个最小正确性：任一技能根目录或 skill 文件变化时重新扫描。
+        """处理SkillLoader 的compute scan marker，支撑 技能加载器 流程。"""
         if not any(root.exists() for root in self.skills_roots):
             return 0.0
 
@@ -85,6 +90,7 @@ class SkillLoader:
 
     def _should_refresh_on_call(self) -> bool:
         # 这个开关只影响“调用前自动刷新”，不影响显式 scan()。
+        """判断是否应当SkillLoader 的refresh on call，供 技能加载器 流程复用。"""
         raw_value = os.getenv("SKILLS_REFRESH_ON_CALL", "true").strip().casefold()
         if raw_value in {"1", "true", "yes", "on"}:
             return True
@@ -93,6 +99,7 @@ class SkillLoader:
         raise ValueError("SKILLS_REFRESH_ON_CALL 必须是 true 或 false。")
 
     def refresh_if_stale(self) -> None:
+        """处理SkillLoader 的refresh if stale，支撑 技能加载器 流程。"""
         if not self._should_refresh_on_call():
             if self._last_scan_marker < 0:
                 self.scan()
@@ -103,6 +110,7 @@ class SkillLoader:
             self.scan()
 
     def scan(self) -> list[SkillMeta]:
+        """处理SkillLoader 的scan，支撑 技能加载器 流程。"""
         skills: dict[str, SkillMeta] = {}
         if not any(root.exists() for root in self.skills_roots):
             self._skills = {}
@@ -151,14 +159,17 @@ class SkillLoader:
         return self.list_skills()
 
     def list_skills(self) -> list[SkillMeta]:
+        """列出SkillLoader 的skills，供 技能加载器 流程复用。"""
         self.refresh_if_stale()
         return [self._skills[name] for name in sorted(self._skills)]
 
     def get_skill(self, name: str) -> SkillMeta | None:
+        """获取SkillLoader 的skill，供 技能加载器 流程复用。"""
         self.refresh_if_stale()
         return self._skills.get(name)
 
     def render_skill(self, name: str, args: str = "") -> SkillMeta | None:
+        """渲染SkillLoader 的skill，供 技能加载器 流程复用。"""
         skill = self.get_skill(name)
         if skill is None:
             return None
@@ -175,6 +186,7 @@ class SkillLoader:
 
 
 def read_skills_prompt_char_budget() -> int:
+    """读取skills prompt char budget，供 技能加载器 流程复用。"""
     raw_value = os.getenv("SKILLS_PROMPT_CHAR_BUDGET", "12000").strip()
     try:
         value = int(raw_value)
@@ -193,6 +205,7 @@ def get_default_skill_loader(
 ) -> SkillLoader:
     # 默认索引同时包含内置 skills 与当前工作区 skills，
     # 并允许 worktree 里的 skills 覆盖工作区和内置技能。
+    """获取default skill loader，供 技能加载器 流程复用。"""
     active_workspace_root = (workspace_root or get_default_workspace_root()).resolve()
     active_execution_root = (execution_root or active_workspace_root).resolve()
 

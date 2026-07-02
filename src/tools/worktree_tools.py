@@ -16,6 +16,7 @@ from src.tools.common import (
 
 
 def _require_runtime_context(runtime_context: ToolRuntimeContext | None) -> ToolRuntimeContext:
+    """处理require runtime context，支撑 worktree 工具 流程。"""
     if runtime_context is None or runtime_context.session is None:
         raise ToolFailure(
             code="NO_SESSION",
@@ -31,6 +32,7 @@ def _worktree_create(
     runtime_context: ToolRuntimeContext | None = None,
 ) -> ToolResponse:
     # WorktreeCreate 只为一个任务绑定隔离目录，不在这里顺手切 teammate 状态。
+    """处理worktree create，支撑 worktree 工具 流程。"""
     start_time = start_timer()
     params_input = {"task_id": task_id}
     try:
@@ -72,6 +74,7 @@ def _worktree_create(
 
 def _worktree_list(*, runtime_context: ToolRuntimeContext | None = None) -> ToolResponse:
     # 当前先从任务图反推 worktree 列表，不再额外维护第二份 registry。
+    """处理worktree list，支撑 worktree 工具 流程。"""
     start_time = start_timer()
     params_input: dict[str, object] = {}
     try:
@@ -103,6 +106,7 @@ def _worktree_closeout(
     runtime_context: ToolRuntimeContext | None = None,
 ) -> ToolResponse:
     # closeout 当前只支持 keep/remove，两种动作都围绕 task 绑定 worktree 展开。
+    """处理worktree closeout，支撑 worktree 工具 流程。"""
     start_time = start_timer()
     params_input = {"task_id": task_id, "action": action}
     try:
@@ -147,6 +151,7 @@ def _worktree_create_tool(
     ctx: RunContextWrapper[ToolRuntimeContext],
     task_id: int,
 ) -> ToolResponse:
+    """处理worktree create tool，支撑 worktree 工具 流程。"""
     return run_traced_tool(
         ctx.context,
         tool_name="WorktreeCreate",
@@ -159,6 +164,7 @@ def _worktree_create_tool(
 
 
 def _worktree_list_tool(ctx: RunContextWrapper[ToolRuntimeContext]) -> ToolResponse:
+    """处理worktree list tool，支撑 worktree 工具 流程。"""
     return run_traced_tool(
         ctx.context,
         tool_name="WorktreeList",
@@ -172,6 +178,7 @@ def _worktree_closeout_tool(
     task_id: int,
     action: str,
 ) -> ToolResponse:
+    """处理worktree closeout tool，支撑 worktree 工具 流程。"""
     return run_traced_tool(
         ctx.context,
         tool_name="WorktreeCloseout",

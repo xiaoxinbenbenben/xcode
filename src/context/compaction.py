@@ -33,6 +33,7 @@ class HistorySummary:
     unfinished_items: list[str]
 
     def as_dict(self) -> dict[str, Any]:
+        """把当前对象转换成可序列化的字典。"""
         return {
             "layer": self.layer,
             "current_goal": self.current_goal,
@@ -43,6 +44,7 @@ class HistorySummary:
 
     def to_message_text(self) -> str:
         # 写回 session 时只保留一个稳定模板，便于后续继续叠代 summary。
+        """把摘要对象渲染成可放入模型上下文的文本。"""
         sections = [
             "## Archived Session Summary",
             "",
@@ -118,6 +120,7 @@ class PreparedHistory:
 
 
 def _read_positive_int_env(name: str, default: int) -> int:
+    """读取positive int env，供 上下文压缩 流程复用。"""
     raw_value = os.environ.get(name)
     if raw_value is None:
         return default
@@ -132,6 +135,7 @@ def _read_positive_int_env(name: str, default: int) -> int:
 
 def get_context_compaction_config() -> ContextCompactionConfig:
     # 配置按调用时动态读取，方便开发时直接通过环境变量压低阈值做验证。
+    """获取context compaction config，供 上下文压缩 流程复用。"""
     archive_dir = os.environ.get("CONTEXT_COMPACT_ARCHIVE_DIR", DEFAULT_CONTEXT_COMPACT_ARCHIVE_DIR)
     return ContextCompactionConfig(
         trigger_tokens=_read_positive_int_env(
@@ -165,6 +169,7 @@ def get_context_compaction_config() -> ContextCompactionConfig:
 
 
 def _item_to_dict(item: TResponseInputItem) -> dict[str, Any]:
+    """处理item to dict，支撑 上下文压缩 流程。"""
     if isinstance(item, dict):
         return dict(item)
     if hasattr(item, "model_dump"):
@@ -173,6 +178,7 @@ def _item_to_dict(item: TResponseInputItem) -> dict[str, Any]:
 
 
 def _is_summary_message(item: TResponseInputItem) -> bool:
+    """判断summary message，供 上下文压缩 流程复用。"""
     raw_item = _item_to_dict(item)
     return (
         raw_item.get("role") == "system"
@@ -182,6 +188,7 @@ def _is_summary_message(item: TResponseInputItem) -> bool:
 
 
 def _get_tool_output_text(item: TResponseInputItem) -> str | None:
+    """获取tool output text，供 上下文压缩 流程复用。"""
     raw_item = _item_to_dict(item)
     item_type = str(raw_item.get("type", ""))
     if item_type not in {"function_call_output", "local_shell_call_output", "shell_call_output"}:
@@ -191,6 +198,7 @@ def _get_tool_output_text(item: TResponseInputItem) -> str | None:
 
 
 def _replace_tool_output(item: TResponseInputItem, output: str) -> TResponseInputItem:
+    """处理replace tool output，支撑 上下文压缩 流程。"""
     raw_item = _item_to_dict(item)
     raw_item["output"] = output
     return raw_item
@@ -198,6 +206,7 @@ def _replace_tool_output(item: TResponseInputItem, output: str) -> TResponseInpu
 
 def _build_tool_call_name_map(items: list[TResponseInputItem]) -> dict[str, str]:
     # micro_compact 需要把 call_id 还原成工具名，才能保留“之前用过什么工具”这层线索。
+    """构建tool call name map，供 上下文压缩 流程复用。"""
     name_map: dict[str, str] = {}
     for item in items:
         raw_item = _item_to_dict(item)
@@ -211,6 +220,7 @@ def _build_tool_call_name_map(items: list[TResponseInputItem]) -> dict[str, str]
 
 
 def _build_tool_placeholder(tool_name: str) -> str:
+    """构建tool placeholder，供 上下文压缩 流程复用。"""
     return f"[Previous tool result: used {tool_name}]"
 
 
@@ -220,6 +230,7 @@ def micro_compact_history_items(
     config: MicroCompactConfig | None = None,
 ) -> tuple[list[TResponseInputItem], MicroCompactStats]:
     # 这一步只生成“本轮送给模型的 L3 视图”，不回写原始 session。
+    """处理micro compact history items，支撑 上下文压缩 流程。"""
     active_config = config or get_context_compaction_config().micro
     tool_name_map = _build_tool_call_name_map(items)
     tool_result_indices = [
@@ -261,6 +272,7 @@ def micro_compact_history_items(
 
 
 def _serialize_for_tokens(value: Any) -> str:
+    """处理serialize for tokens，支撑 上下文压缩 流程。"""
     try:
         return json.dumps(value, ensure_ascii=False, sort_keys=True)
     except TypeError:
@@ -276,6 +288,7 @@ def estimate_context_tokens(
     current_turn_items: list[TResponseInputItem],
 ) -> int:
     # 这里先做“调用前本地估算”，避免把是否压缩完全交给上一次 API usage。
+    """估算context tokens，供 上下文压缩 流程复用。"""
     try:
         encoding = tiktoken.encoding_for_model(model)
     except KeyError:
@@ -293,6 +306,7 @@ def estimate_context_tokens(
 
 
 def _render_history_for_summary(history_items: list[TResponseInputItem]) -> str:
+    """渲染history for summary，供 上下文压缩 流程复用。"""
     rendered_lines: list[str] = []
     for item in history_items:
         raw_item = _item_to_dict(item)
@@ -310,6 +324,7 @@ async def generate_history_summary(
     model: str,
 ) -> HistorySummary:
     # summary 生成和主 agent 分开跑，避免把压缩提示词污染正常 coding 提示词。
+    """处理generate history summary，支撑 上下文压缩 流程。"""
     summary_agent = Agent(
         name="history-summary",
         model=model,
@@ -355,6 +370,7 @@ async def generate_history_summary(
 
 
 def build_summary_message_item(summary: HistorySummary) -> TResponseInputItem:
+    """构建summary message item，供 上下文压缩 流程复用。"""
     return {
         "role": "system",
         "content": summary.to_message_text(),
@@ -368,6 +384,7 @@ def _archive_history_items(
     archive_dir: Path,
 ) -> str:
     # 自动压缩前先把完整对话落盘，后面要追查被压缩掉的上下文时有原始证据。
+    """处理archive history items，支撑 上下文压缩 流程。"""
     archive_dir.mkdir(parents=True, exist_ok=True)
     filename = (
         f"session_{session_id}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_{uuid4().hex[:8]}.json"
@@ -389,6 +406,7 @@ async def compact_session_history(
     summary_generator: SummaryGenerator | None = None,
     force: bool = False,
 ) -> SessionCompactionResult:
+    """压缩session history，供 上下文压缩 流程复用。"""
     active_config = config or get_context_compaction_config()
     raw_items = list(await session.get_items())
     if not raw_items:
@@ -429,6 +447,7 @@ async def prepare_history_for_model(
     config: ContextCompactionConfig | None = None,
 ) -> PreparedHistory:
     # 这是 L3 的统一入口：先做 view 级 micro_compact，再按 token 估算决定是否真的改写 session。
+    """准备history for model，供 上下文压缩 流程复用。"""
     active_config = config or get_context_compaction_config()
     raw_items = list(await session.get_items())
     history_items, micro_stats = micro_compact_history_items(raw_items, config=active_config.micro)

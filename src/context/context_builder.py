@@ -236,6 +236,7 @@ class ContextBundle:
 
     def build_agent_instructions(self) -> str:
         # SDK 最终只接受一份 instructions 字符串，但在适配边界之前仍保留分层结构。
+        """构建ContextBundle 的agent instructions，供 上下文构建 流程复用。"""
         sections = [
             "<system-prompt>",
             self.stable.system_prompt,
@@ -267,11 +268,13 @@ class ContextBundle:
 
     def build_runner_input(self) -> list[TResponseInputItem]:
         # session 已经负责保存历史，所以每轮只把“当前输入项”交给 Runner。
+        """构建ContextBundle 的runner input，供 上下文构建 流程复用。"""
         return list(self.runtime.current_turn_items)
 
 
 def _build_skill_catalog_text(loader: SkillLoader) -> str:
     # L1 只放 skills 简表，不把正文长期塞进稳定层。
+    """构建skill catalog text，供 上下文构建 流程复用。"""
     skills = loader.list_skills()
     if not skills:
         return ""
@@ -295,6 +298,7 @@ def _build_skill_catalog_text(loader: SkillLoader) -> str:
 
 def _build_root_system_prompt() -> str:
     # L1 的主 system prompt 只放稳定角色和工作原则，不混入当前轮动态状态。
+    """构建root system prompt，供 上下文构建 流程复用。"""
     return "\n\n".join(ROOT_SYSTEM_PROMPT_SECTIONS)
 
 
@@ -304,6 +308,7 @@ def _build_grouped_tool_rules(
     skill_loader: SkillLoader | None = None,
 ) -> str:
     # 工具规则先按能力组输出，再落到单工具规则，避免后续继续增长成平铺长清单。
+    """构建grouped tool rules，供 上下文构建 流程复用。"""
     lines: list[str] = []
     enabled_tools = set(tool_names)
 
@@ -335,6 +340,7 @@ def build_stable_context_layer(
     skill_loader: SkillLoader | None = None,
 ) -> StableContextLayer:
     # 这里仍然只覆盖真实已落地工具，但主 prompt 与工具规则都升级成结构化版本。
+    """构建stable context layer，供 上下文构建 流程复用。"""
     return StableContextLayer(
         system_prompt=_build_root_system_prompt(),
         tool_rules=_build_grouped_tool_rules(
@@ -345,6 +351,7 @@ def build_stable_context_layer(
 
 
 def build_repo_rule_layer(*, workspace_root: Path | None = None) -> RepoRuleLayer:
+    """构建repo rule layer，供 上下文构建 流程复用。"""
     path = (workspace_root or get_default_workspace_root()).resolve() / CODE_LAW_FILENAME
     if not path.exists():
         return RepoRuleLayer(path=None, content="")
@@ -356,6 +363,7 @@ def build_repo_rule_layer(*, workspace_root: Path | None = None) -> RepoRuleLaye
 
 def _truncate_long_term_memory_preview(content: str) -> tuple[str, bool]:
     # MEMORY.md 只注入索引预览，不让长期记忆层反过来吞掉 prompt 预算。
+    """截断long term memory preview，供 上下文构建 流程复用。"""
     preview_lines = content.splitlines()[:LONG_TERM_MEMORY_PREVIEW_LINE_BUDGET]
     preview = "\n".join(preview_lines).strip()
     truncated = len(preview_lines) < len(content.splitlines())
@@ -369,6 +377,7 @@ def _truncate_long_term_memory_preview(content: str) -> tuple[str, bool]:
 
 def build_long_term_memory_layer(*, workspace_root: Path | None = None) -> LongTermMemoryLayer:
     # memory dir 绑定 workspace identity，而不是 execution_root；这样 worktree 切换不会拆散长期记忆。
+    """构建long term memory layer，供 上下文构建 流程复用。"""
     memory_dir = get_workspace_memory_dir(workspace_root=workspace_root)
     index_path = get_workspace_memory_index_path(workspace_root=workspace_root)
     if not index_path.exists():
@@ -393,6 +402,7 @@ def build_long_term_memory_layer(*, workspace_root: Path | None = None) -> LongT
 
 def _render_long_term_memory_section(layer: LongTermMemoryLayer) -> str:
     # 这里把“路径、格式、当前索引预览”一次讲清，后续模型才能直接复用 Read/Edit/Write 维护记忆。
+    """渲染long term memory section，供 上下文构建 流程复用。"""
     lines = [
         f"Workspace long-term memory directory: {layer.memory_dir}",
         f"Memory index path: {layer.index_path}",
@@ -423,6 +433,7 @@ def _render_long_term_memory_section(layer: LongTermMemoryLayer) -> str:
 
 def _build_background_results_item(notifications: list[dict[str, object]]) -> TResponseInputItem:
     # 后台结果只回注入简短摘要，完整日志仍留在任务图或产物文件里回查。
+    """构建background results item，供 上下文构建 流程复用。"""
     lines = ["<background-results>"]
     lines.extend(f"- {item['text']}" for item in notifications)
     lines.append("</background-results>")
@@ -434,6 +445,7 @@ def _build_background_results_item(notifications: list[dict[str, object]]) -> TR
 
 def _build_team_messages_item(messages: list[dict[str, object]]) -> TResponseInputItem:
     # team-lead 只需要看到 teammate 发来的简短消息，不直接注入完整 teammate transcript。
+    """构建team messages item，供 上下文构建 流程复用。"""
     lines = ["<team-messages>"]
     for item in messages:
         summary = str(item.get("summary") or "").strip()
@@ -467,6 +479,7 @@ async def build_context_bundle(
 ) -> ContextBundle:
     # 这里统一组装当前轮真正送给模型的 L1/L2/L3。
     # AgentTeam、background result、compaction 都在这一层汇合。
+    """构建context bundle，供 上下文构建 流程复用。"""
     active_workspace_root = (
         session_runtime.context.workspace_root
         if session_runtime is not None

@@ -28,10 +28,12 @@ class TraceConfig:
 
 
 def _utc_now() -> str:
+    """处理utc now，支撑 本地 trace 流程。"""
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _read_bool_env(name: str, default: bool) -> bool:
+    """读取bool env，供 本地 trace 流程复用。"""
     raw_value = os.environ.get(name)
     if raw_value is None:
         return default
@@ -44,6 +46,7 @@ def _read_bool_env(name: str, default: bool) -> bool:
 
 
 def load_trace_config() -> TraceConfig:
+    """加载trace config，供 本地 trace 流程复用。"""
     trace_dir_raw = os.environ.get("TRACE_DIR", DEFAULT_TRACE_DIR).strip() or DEFAULT_TRACE_DIR
     trace_dir = Path(trace_dir_raw)
     if not trace_dir.is_absolute():
@@ -56,6 +59,7 @@ def load_trace_config() -> TraceConfig:
 
 
 def _normalize_usage(usage: Any) -> dict[str, int] | None:
+    """规范化usage，供 本地 trace 流程复用。"""
     if usage is None:
         return None
     if hasattr(usage, "model_dump"):
@@ -86,6 +90,7 @@ def _normalize_usage(usage: Any) -> dict[str, int] | None:
 
 def extract_usage_from_raw_event_data(raw_event_data: Any) -> dict[str, int] | None:
     # 第三方 provider 可能只在完成事件里带 usage，所以这里统一做一次鸭子类型提取。
+    """提取usage from raw event data，供 本地 trace 流程复用。"""
     response = getattr(raw_event_data, "response", None)
     usage = getattr(response, "usage", None) if response is not None else None
     normalized = _normalize_usage(usage)
@@ -95,12 +100,14 @@ def extract_usage_from_raw_event_data(raw_event_data: Any) -> dict[str, int] | N
 
 
 def _sanitize_string(value: str) -> str:
+    """清理string，供 本地 trace 流程复用。"""
     sanitized = _BEARER_TOKEN_RE.sub("Bearer [REDACTED]", value)
     sanitized = _OPENAI_TOKEN_RE.sub("sk-[REDACTED]", sanitized)
     return sanitized
 
 
 def sanitize_trace_payload(value: Any) -> Any:
+    """清理trace payload，供 本地 trace 流程复用。"""
     if isinstance(value, str):
         return _sanitize_string(value)
     if isinstance(value, list):
@@ -115,6 +122,7 @@ def sanitize_trace_payload(value: Any) -> Any:
 
 class LocalTraceLogger:
     def __init__(self, *, session_id: str, config: TraceConfig | None = None) -> None:
+        """初始化对象需要持有的运行状态。"""
         self._config = config or load_trace_config()
         self._session_id = session_id
         self._trace_path = self._config.trace_dir / f"trace-{session_id}.jsonl"
@@ -131,10 +139,12 @@ class LocalTraceLogger:
 
     @property
     def enabled(self) -> bool:
+        """判断当前 trace logger 是否启用。"""
         return self._config.enabled
 
     @property
     def trace_path(self) -> str:
+        """返回 trace JSONL 文件路径。"""
         return display_path(
             self._trace_path,
             get_default_workspace_root(),
@@ -142,12 +152,14 @@ class LocalTraceLogger:
 
     @property
     def html_path(self) -> str:
+        """返回 trace HTML 快照路径。"""
         return display_path(
             self._html_path,
             get_default_workspace_root(),
         )
 
     def _next_step(self, run_id: str | None) -> int:
+        """处理LocalTraceLogger 的next step，支撑 本地 trace 流程。"""
         if run_id is None:
             return 0
         next_step = self._run_steps.get(run_id, 0) + 1
@@ -155,6 +167,7 @@ class LocalTraceLogger:
         return next_step
 
     def _write_event(self, *, run_id: str | None, event: str, payload: dict[str, Any]) -> None:
+        """写入LocalTraceLogger 的event，供 本地 trace 流程复用。"""
         if not self.enabled:
             return
         self._trace_path.parent.mkdir(parents=True, exist_ok=True)
@@ -174,11 +187,13 @@ class LocalTraceLogger:
         self._write_html_snapshot()
 
     def _write_html_snapshot(self) -> None:
+        """写入LocalTraceLogger 的html snapshot，供 本地 trace 流程复用。"""
         self._html_path.parent.mkdir(parents=True, exist_ok=True)
         self._html_path.write_text(self._render_html(), encoding="utf-8")
 
     def _render_html(self) -> str:
         # HTML 只做最小审计页，不追求复杂 UI；重点是让事件时间线和工具结果可读。
+        """渲染LocalTraceLogger 的html，供 本地 trace 流程复用。"""
         event_blocks = "\n".join(self._render_event_block(record) for record in self._records)
         total_usage = html.escape(json.dumps(self._total_usage, ensure_ascii=False))
         tools_used = html.escape(", ".join(sorted(self._tools_used)) or "None")
@@ -214,6 +229,7 @@ class LocalTraceLogger:
 """
 
     def _render_event_block(self, record: dict[str, Any]) -> str:
+        """渲染LocalTraceLogger 的event block，供 本地 trace 流程复用。"""
         title = (
             f"step {record['step']} · {record['event']} · "
             f"{record['ts']} · run={record['run_id'] or '-'}"
@@ -234,6 +250,7 @@ class LocalTraceLogger:
 
     def _build_html_payload(self, record: dict[str, Any]) -> dict[str, Any]:
         # JSONL 保留完整结果；HTML 只对最容易膨胀的 tool_result.data 做审计预览。
+        """构建LocalTraceLogger 的html payload，供 本地 trace 流程复用。"""
         payload = json.loads(json.dumps(record["payload"], ensure_ascii=False))
         if record["event"] != "tool_result":
             return payload
@@ -253,6 +270,7 @@ class LocalTraceLogger:
         return payload
 
     def start_run(self, *, user_input: str, model: str) -> str:
+        """启动LocalTraceLogger 的run，供 本地 trace 流程复用。"""
         run_id = f"run-{uuid4().hex[:8]}"
         self._run_count += 1
         self._write_event(run_id=run_id, event="run_start", payload={"model": model})
@@ -260,9 +278,11 @@ class LocalTraceLogger:
         return run_id
 
     def log_context_build(self, *, run_id: str, payload: dict[str, Any]) -> None:
+        """处理LocalTraceLogger 的log context build，支撑 本地 trace 流程。"""
         self._write_event(run_id=run_id, event="context_build", payload=payload)
 
     def log_tool_call(self, *, run_id: str, tool_name: str, args: dict[str, Any]) -> None:
+        """处理LocalTraceLogger 的log tool call，支撑 本地 trace 流程。"""
         self._tools_used.add(tool_name)
         self._write_event(
             run_id=run_id,
@@ -271,6 +291,7 @@ class LocalTraceLogger:
         )
 
     def log_tool_result(self, *, run_id: str, tool_name: str, result: dict[str, Any]) -> None:
+        """处理LocalTraceLogger 的log tool result，支撑 本地 trace 流程。"""
         self._tools_used.add(tool_name)
         self._write_event(
             run_id=run_id,
@@ -286,6 +307,7 @@ class LocalTraceLogger:
         message: str,
         **payload: Any,
     ) -> None:
+        """处理LocalTraceLogger 的log error，支撑 本地 trace 流程。"""
         error_payload = {"stage": stage, "message": message, **payload}
         self._write_event(run_id=run_id, event="error", payload=error_payload)
 
@@ -296,6 +318,7 @@ class LocalTraceLogger:
         final_output: str,
         usage: dict[str, int] | None,
     ) -> None:
+        """处理LocalTraceLogger 的log finish，支撑 本地 trace 流程。"""
         self._write_event(
             run_id=run_id,
             event="finish",
@@ -306,6 +329,7 @@ class LocalTraceLogger:
         )
 
     def log_run_end(self, *, run_id: str, status: str, usage: dict[str, int] | None) -> None:
+        """处理LocalTraceLogger 的log run end，支撑 本地 trace 流程。"""
         if usage is not None:
             for key in self._total_usage:
                 self._total_usage[key] += usage.get(key, 0)
@@ -316,6 +340,7 @@ class LocalTraceLogger:
         )
 
     def log_session_summary(self) -> None:
+        """处理LocalTraceLogger 的log session summary，支撑 本地 trace 流程。"""
         self._write_event(
             run_id=None,
             event="session_summary",
@@ -334,6 +359,7 @@ def build_trace_logger(
     enabled: bool | None = None,
 ) -> LocalTraceLogger | None:
     # tracing 配置默认仍从环境变量读取，但 session 层可以覆盖目录和开关。
+    """构建trace logger，供 本地 trace 流程复用。"""
     config = load_trace_config()
     if trace_dir is not None:
         config = replace(config, trace_dir=trace_dir)

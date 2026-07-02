@@ -101,6 +101,7 @@ async def compact_history(runtime_context: ToolRuntimeContext | None = None) -> 
 
 async def _compact_tool(ctx: RunContextWrapper[ToolRuntimeContext]) -> ToolResponse:
     # 显式 Compact 和自动压缩复用同一后端，只是触发方式不同。
+    """压缩tool，供 压缩工具 流程复用。"""
     return await run_traced_tool_async(
         ctx.context,
         tool_name="Compact",

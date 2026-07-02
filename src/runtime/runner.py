@@ -15,6 +15,7 @@ from openai import AsyncOpenAI
 from openai.types.responses import ResponseTextDeltaEvent
 
 from src.context import build_context_bundle
+from src.hooks import HookContext, HookEvent
 from src.runtime.agent_factory import build_root_agent
 from src.runtime.config import RuntimeConfig
 from src.runtime.events import RuntimeEventBuilder, summarize_tool_call, summarize_tool_result
@@ -38,7 +39,9 @@ def configure_openai_runtime(config: RuntimeConfig) -> None:
 def build_session_input_callback(context_bundle):
     # SDK 会把“已有历史”和“本轮新输入”分别传给 callback。
     # 这里显式接收两个参数，只替换历史视图，保留当前轮真实新输入。
+    """构建session input callback，供 Agent 运行流 流程复用。"""
     def session_input_callback(_history_items, new_items):
+        """处理session input callback，支撑 Agent 运行流 流程。"""
         return [
             *context_bundle.runtime.history_items,
             *new_items,
@@ -55,18 +58,27 @@ async def run_events(
     """执行一次流式 agent 运行，并统一产出结构化 runtime 事件。"""
     configure_openai_runtime(config)
     active_context = session_runtime.context if session_runtime is not None else None
-    run_id = (
-        active_context.start_trace_run(user_input=user_input, model=config.model)
-        if active_context is not None
-        else f"run-{uuid4().hex[:12]}"
-    )
+    fallback_run_id = f"run-{uuid4().hex[:12]}"
     session_id = session_runtime.session_id if session_runtime is not None else "detached-session"
-    event_builder = RuntimeEventBuilder(run_id=run_id or f"run-{uuid4().hex[:12]}", session_id=session_id)
     if session_runtime is not None:
         # tool context 需要知道当前模型名，手动 Compact 时会复用同一模型生成 summary。
         session_runtime.context.current_model = config.model
         session_runtime.context.main_model = config.model
         session_runtime.context.light_model = config.light_model
+        session_runtime.context.hook_registry.run(
+            HookEvent.USER_PROMPT_SUBMIT,
+            HookContext(
+                runtime_context=session_runtime.context,
+                user_input=user_input,
+                model=config.model,
+            ),
+        )
+    run_id = (
+        active_context.active_trace_run_id
+        if active_context is not None and active_context.active_trace_run_id is not None
+        else fallback_run_id
+    )
+    event_builder = RuntimeEventBuilder(run_id=run_id, session_id=session_id)
     yield event_builder.build(
         "run_started",
         {
@@ -173,14 +185,16 @@ async def run_events(
         if result is not None:
             result.cancel()
         if active_context is not None:
-            active_context.log_trace_error(
-                stage="run",
-                message="用户中断了当前运行。",
-            )
-            active_context.finish_trace_run(
-                final_output="",
-                usage=usage,
-                status="cancelled",
+            active_context.hook_registry.run(
+                HookEvent.STOP,
+                HookContext(
+                    runtime_context=active_context,
+                    status="cancelled",
+                    stage="run",
+                    message="用户中断了当前运行。",
+                    final_output="",
+                    usage=usage,
+                ),
             )
         yield event_builder.build(
             "run_failed",
@@ -189,15 +203,17 @@ async def run_events(
         raise
     except Exception as exc:
         if active_context is not None:
-            active_context.log_trace_error(
-                stage="run",
-                message=str(exc),
-                error_type=exc.__class__.__name__,
-            )
-            active_context.finish_trace_run(
-                final_output="",
-                usage=usage,
-                status="error",
+            active_context.hook_registry.run(
+                HookEvent.STOP,
+                HookContext(
+                    runtime_context=active_context,
+                    status="error",
+                    stage="run",
+                    message=str(exc),
+                    error_type=exc.__class__.__name__,
+                    final_output="",
+                    usage=usage,
+                ),
             )
         yield event_builder.build(
             "run_failed",
@@ -228,10 +244,14 @@ async def run_events(
         )
         saw_completed_text = True
     if active_context is not None:
-        active_context.finish_trace_run(
-            final_output=final_output,
-            usage=usage,
-            status="success",
+        active_context.hook_registry.run(
+            HookEvent.STOP,
+            HookContext(
+                runtime_context=active_context,
+                status="success",
+                final_output=final_output,
+                usage=usage,
+            ),
         )
     yield event_builder.build(
         "run_finished",

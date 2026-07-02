@@ -26,6 +26,7 @@ class ToolResponse(TypedDict):
 
 def _validate_common_fields(*, data: ToolData, stats: ToolStats, context: ToolContext) -> None:
     # 协议层只校验顶层信封的最小约束，不介入具体工具 data 的内部形状。
+    """校验common fields，供 工具响应 流程复用。"""
     if not isinstance(data, dict):
         raise ValueError("data 必须是对象。")
     if "time_ms" not in stats:
@@ -43,6 +44,7 @@ def make_tool_response(
     context: ToolContext,
     error: ToolError | None = None,
 ) -> ToolResponse:
+    """创建tool response，供 工具响应 流程复用。"""
     _validate_common_fields(data=data, stats=stats, context=context)
     if status == "error" and error is None:
         raise ValueError("status 为 error 时必须提供 error 对象。")
@@ -66,6 +68,7 @@ def success_response(
     stats: ToolStats,
     context: ToolContext,
 ) -> ToolResponse:
+    """构建成功response，供 工具响应 流程复用。"""
     return make_tool_response(
         status="success",
         data=data,
@@ -83,6 +86,7 @@ def partial_response(
     stats: ToolStats,
     context: ToolContext,
 ) -> ToolResponse:
+    """构建部分response，供 工具响应 流程复用。"""
     return make_tool_response(
         status="partial",
         data=data,
@@ -103,6 +107,7 @@ def error_response(
     data: ToolData | None = None,
 ) -> ToolResponse:
     # error 响应也保留 data 字段，方便后续携带部分诊断信息，但默认仍返回空对象。
+    """构建错误response，供 工具响应 流程复用。"""
     return make_tool_response(
         status="error",
         data={} if data is None else data,

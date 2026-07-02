@@ -7,18 +7,22 @@ from typing import Any
 
 
 def _utc_now() -> str:
+    """处理utc now，支撑 任务存储 流程。"""
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 def ensure_tasks_dir(tasks_dir: Path) -> None:
+    """确保tasks dir，供 任务存储 流程复用。"""
     tasks_dir.mkdir(parents=True, exist_ok=True)
 
 
 def get_task_path(tasks_dir: Path, task_id: int) -> Path:
+    """获取task path，供 任务存储 流程复用。"""
     return tasks_dir / f"task_{task_id}.json"
 
 
 def get_next_task_id(tasks_dir: Path) -> int:
+    """获取next task id，供 任务存储 流程复用。"""
     ensure_tasks_dir(tasks_dir)
     ids: list[int] = []
     for path in tasks_dir.glob("task_*.json"):
@@ -30,6 +34,7 @@ def get_next_task_id(tasks_dir: Path) -> int:
 
 
 def save_task(tasks_dir: Path, task: dict[str, Any]) -> dict[str, Any]:
+    """保存task，供 任务存储 流程复用。"""
     ensure_tasks_dir(tasks_dir)
     task_path = get_task_path(tasks_dir, int(task["id"]))
     task["updated_at"] = _utc_now()
@@ -41,6 +46,7 @@ def save_task(tasks_dir: Path, task: dict[str, Any]) -> dict[str, Any]:
 
 
 def get_task(tasks_dir: Path, task_id: int) -> dict[str, Any]:
+    """获取task，供 任务存储 流程复用。"""
     task_path = get_task_path(tasks_dir, task_id)
     if not task_path.exists():
         raise FileNotFoundError(f"task_{task_id}.json 不存在。")
@@ -48,6 +54,7 @@ def get_task(tasks_dir: Path, task_id: int) -> dict[str, Any]:
 
 
 def list_tasks(tasks_dir: Path) -> list[dict[str, Any]]:
+    """列出tasks，供 任务存储 流程复用。"""
     ensure_tasks_dir(tasks_dir)
     tasks = [
         json.loads(path.read_text(encoding="utf-8"))
@@ -70,6 +77,7 @@ def create_task(
     status: str = "pending",
 ) -> dict[str, Any]:
     # 任务源数据直接落盘，避免后续被 session 压缩影响。
+    """创建task，供 任务存储 流程复用。"""
     ensure_tasks_dir(tasks_dir)
     now = _utc_now()
     task = {
